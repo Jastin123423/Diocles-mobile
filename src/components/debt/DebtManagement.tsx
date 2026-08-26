@@ -61,15 +61,15 @@ export const DebtManagement: React.FC = () => {
   const [paymentNote, setPaymentNote] = useState('');
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
 
-  // Compute live debts with statuses
+  // Compute live debts with statuses (FILTERED BY USER)
   const debts = useMemo(() => {
-    return DebtService.getAllDebts();
-  }, [dbState.debts]);
+    return DebtService.getAllDebts(currentUser);
+  }, [dbState.debts, currentUser]);
 
-  // Compute summary metrics
+  // Compute summary metrics (FILTERED BY USER)
   const summary = useMemo(() => {
-    return DebtService.getSummary();
-  }, [dbState.debts]);
+    return DebtService.getSummary(currentUser);
+  }, [dbState.debts, currentUser]);
 
   // Filtered debts
   const filteredDebts = useMemo(() => {
@@ -177,7 +177,7 @@ export const DebtManagement: React.FC = () => {
           remainingAmount: newRemaining,
           dueDate: formDueDate,
         })),
-      });
+      }, currentUser);
 
       addToast({
         type: 'success',
@@ -268,9 +268,9 @@ export const DebtManagement: React.FC = () => {
 
   // Handle Delete
   const handleConfirmDelete = () => {
-    if (!deletingDebt) return;
+    if (!deletingDebt || !currentUser) return;
 
-    DebtService.deleteDebt(deletingDebt.id);
+    DebtService.deleteDebt(deletingDebt.id, currentUser);
 
     addToast({
       type: 'info',
@@ -547,69 +547,153 @@ export const DebtManagement: React.FC = () => {
           </div>
         </div>
 
-        {/* DEBTS LIST: Mobile Cards & Desktop Table */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          {filteredDebts.length === 0 ? (
-            <div className="py-12 text-center text-slate-500">
-              <FileText className="w-10 h-10 mx-auto mb-2 opacity-30" />
-              <div className="font-medium text-slate-400">Hakuna rekodi za madeni zilizopatikana</div>
-              <div className="text-[11px] text-slate-600 mt-0.5">
-                Bonyeza "+ Tunadai" au "+ Wanatudai" kurekodi deni jipya.
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Mobile Cards View (< lg) */}
-              <div className="lg:hidden divide-y divide-slate-800/80">
-                {filteredDebts.map(debt => {
-                  const isPaid = debt.status === 'PAID';
-                  const isPartiallyPaid = debt.status === 'PARTIALLY_PAID';
-                  const isOverdue = debt.status === 'OVERDUE';
-                  const isDueToday = debt.status === 'DUE_TODAY';
-                  const overdueDays = isOverdue ? DebtService.getOverdueDays(debt.dueDate) : 0;
-                  const paidAmount = debt.paidAmount || (isPaid ? debt.amount : 0);
-                  const remainingAmount = debt.remainingAmount !== undefined ? debt.remainingAmount : (isPaid ? 0 : Math.max(0, debt.amount - paidAmount));
-                  const paymentsCount = debt.payments?.length || (paidAmount > 0 ? 1 : 0);
+        {/* DEBTS TABLE */}
+        <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-slate-800 bg-slate-950/80 text-slate-400 font-semibold uppercase text-[10px] tracking-wider">
+                  <th className="py-3 px-4">Aina</th>
+                  <th className="py-3 px-4">Mteja / Mtoa Huduma</th>
+                  <th className="py-3 px-4">Bidhaa / Maelezo</th>
+                  <th className="py-3 px-4">Jumla ya Deni</th>
+                  <th className="py-3 px-4">Kiasi Kilicholipwa</th>
+                  <th className="py-3 px-4">Salio Lililobaki (Remained)</th>
+                  <th className="py-3 px-4">Tarehe ya Kulipa</th>
+                  <th className="py-3 px-4">Hali (Status)</th>
+                  <th className="py-3 px-4 text-right">Vitendo (Actions)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {filteredDebts.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center text-slate-500">
+                      <FileText className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                      <div className="font-medium text-slate-400">Hakuna rekodi za madeni zilizopatikana</div>
+                      <div className="text-[11px] text-slate-600 mt-0.5">
+                        Bonyeza "+ Tunadai" au "+ Wanatudai" kurekodi deni jipya.
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredDebts.map(debt => {
+                    const isPaid = debt.status === 'PAID';
+                    const isPartiallyPaid = debt.status === 'PARTIALLY_PAID';
+                    const isOverdue = debt.status === 'OVERDUE';
+                    const isDueToday = debt.status === 'DUE_TODAY';
+                    const overdueDays = isOverdue ? DebtService.getOverdueDays(debt.dueDate) : 0;
+                    const paidAmount = debt.paidAmount || (isPaid ? debt.amount : 0);
+                    const remainingAmount = debt.remainingAmount !== undefined ? debt.remainingAmount : (isPaid ? 0 : Math.max(0, debt.amount - paidAmount));
+                    const paymentsCount = debt.payments?.length || (paidAmount > 0 ? 1 : 0);
 
-                  return (
-                    <div
-                      key={debt.id}
-                      className={`p-3.5 space-y-2.5 ${isOverdue && !isPaid ? 'bg-rose-950/15' : ''}`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            {debt.type === 'WE_DEMAND' ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
-                                <ArrowDownLeft className="w-3 h-3" /> Tunadai
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-bold">
-                                <ArrowUpRight className="w-3 h-3" /> Wanatudai
-                              </span>
-                            )}
-                            <h4 className="text-xs font-bold text-white">{debt.debtorName}</h4>
+                    return (
+                      <tr
+                        key={debt.id}
+                        className={`hover:bg-slate-850/60 transition ${
+                          isOverdue && !isPaid ? 'bg-rose-950/10' : ''
+                        }`}
+                      >
+                        {/* Type */}
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          {debt.type === 'WE_DEMAND' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-semibold">
+                              <ArrowDownLeft className="w-3 h-3" /> Tunadai
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-semibold">
+                              <ArrowUpRight className="w-3 h-3" /> Wanatudai
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Debtor Name & Contact */}
+                        <td className="py-3.5 px-4 font-semibold text-white">
+                          <div className="flex items-center gap-1.5">
+                            <span>{debt.debtorName}</span>
                           </div>
-
                           {debt.contact && (
-                            <div className="flex items-center gap-1 font-mono text-[11px] text-slate-400 mt-1">
+                            <div className="flex items-center gap-1 font-mono text-[11px] text-slate-400 font-normal mt-0.5">
                               <Phone className="w-3 h-3 text-slate-500" />
-                              <a href={`tel:${debt.contact}`} className="hover:text-blue-400 underline">
-                                {debt.contact}
-                              </a>
+                              <span>{debt.contact}</span>
                             </div>
                           )}
-                        </div>
+                        </td>
+
+                        {/* Product / Description */}
+                        <td className="py-3.5 px-4 text-slate-300">
+                          <div className="font-medium max-w-xs truncate">{debt.productDescription || '—'}</div>
+                          {debt.notes && (
+                            <div className="text-[10px] text-slate-500 truncate max-w-xs">
+                              {debt.notes}
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Total Amount */}
+                        <td className="py-3.5 px-4 font-mono font-semibold text-slate-300 whitespace-nowrap">
+                          {formatCurrency(debt.amount, settings.currencySymbol)}
+                        </td>
+
+                        {/* Paid Amount */}
+                        <td className="py-3.5 px-4 font-mono whitespace-nowrap">
+                          <span className={paidAmount > 0 ? 'text-emerald-400 font-bold' : 'text-slate-500'}>
+                            {formatCurrency(paidAmount, settings.currencySymbol)}
+                          </span>
+                          {paymentsCount > 1 && (
+                            <button
+                              onClick={() => setViewingHistoryDebt(debt)}
+                              className="block text-[10px] text-blue-400 hover:underline mt-0.5 font-sans"
+                            >
+                              ({paymentsCount} awamu)
+                            </button>
+                          )}
+                        </td>
+
+                        {/* Remaining Amount */}
+                        <td className="py-3.5 px-4 font-mono font-bold text-sm whitespace-nowrap">
+                          {remainingAmount <= 0 ? (
+                            <span className="text-emerald-400 text-xs flex items-center gap-1">
+                              <Check className="w-3.5 h-3.5" /> 0 (Hakuna Deni)
+                            </span>
+                          ) : (
+                            <span className={debt.type === 'WE_DEMAND' ? 'text-emerald-300 font-extrabold' : 'text-amber-300 font-extrabold'}>
+                              {formatCurrency(remainingAmount, settings.currencySymbol)}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Due Date */}
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          {debt.dueDate ? (
+                            <div>
+                              <div className="font-mono text-slate-300">
+                                {formatDate(debt.dueDate)}
+                              </div>
+                              {isOverdue && !isPaid && (
+                                <div className="text-[10px] font-semibold text-rose-400 flex items-center gap-1 mt-0.5">
+                                  <AlertTriangle className="w-3 h-3" /> Zimepita siku {overdueDays}
+                                </div>
+                              )}
+                              {isDueToday && !isPaid && (
+                                <div className="text-[10px] font-semibold text-amber-400 flex items-center gap-1 mt-0.5">
+                                  <Clock className="w-3 h-3" /> Inatakiwa leo
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-500">Haina tarehe</span>
+                          )}
+                        </td>
 
                         {/* Status Badge */}
-                        <div>
+                        <td className="py-3.5 px-4 whitespace-nowrap">
                           {isPaid ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700/80 text-[10px] font-bold">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Imelipwa
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Imelipwa Kamili
                             </span>
                           ) : isPartiallyPaid ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-950/80 text-blue-300 border border-blue-700/80 text-[10px] font-bold">
-                              <Clock className="w-3 h-3 text-blue-400" /> Awamu
+                              <Clock className="w-3 h-3 text-blue-400" /> Imelipwa Sehemu
                             </span>
                           ) : isOverdue ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-950/80 text-rose-300 border border-rose-800 text-[10px] font-semibold">
@@ -617,313 +701,76 @@ export const DebtManagement: React.FC = () => {
                             </span>
                           ) : isDueToday ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-800 text-[10px] font-semibold">
-                              <Clock className="w-3 h-3" /> Leo
+                              <Clock className="w-3 h-3" /> Inatakiwa Leo
                             </span>
                           ) : (
                             <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-semibold">
-                              Inasubiri
+                              Inasubiri (Pending)
                             </span>
                           )}
-                        </div>
-                      </div>
+                        </td>
 
-                      {debt.productDescription && (
-                        <div className="text-[11px] text-slate-300 bg-slate-950/60 p-2 rounded-lg border border-slate-800/80">
-                          <span className="text-slate-500 font-semibold">Bidhaa: </span>
-                          {debt.productDescription}
-                        </div>
-                      )}
-
-                      <div className="grid grid-cols-3 gap-2 text-center text-xs py-1">
-                        <div className="bg-slate-950/50 p-1.5 rounded-lg border border-slate-800">
-                          <div className="text-[9px] text-slate-400 font-medium">Jumla</div>
-                          <div className="font-mono font-bold text-slate-200 text-[11px]">
-                            {formatCurrency(debt.amount, settings.currencySymbol)}
-                          </div>
-                        </div>
-                        <div className="bg-slate-950/50 p-1.5 rounded-lg border border-slate-800">
-                          <div className="text-[9px] text-slate-400 font-medium">Imelipwa</div>
-                          <div className="font-mono font-bold text-emerald-400 text-[11px]">
-                            {formatCurrency(paidAmount, settings.currencySymbol)}
-                          </div>
-                        </div>
-                        <div className="bg-slate-950/50 p-1.5 rounded-lg border border-slate-800">
-                          <div className="text-[9px] text-slate-400 font-medium">Baki</div>
-                          <div className={`font-mono font-extrabold text-[11px] ${debt.type === 'WE_DEMAND' ? 'text-emerald-300' : 'text-amber-300'}`}>
-                            {formatCurrency(remainingAmount, settings.currencySymbol)}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-xs">
-                        <div className="text-[11px] text-slate-400">
-                          {debt.dueDate ? (
-                            <span>Tarehe: <strong className="text-slate-300 font-mono">{formatDate(debt.dueDate)}</strong></span>
-                          ) : (
-                            <span className="text-slate-500">Haina tarehe</span>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          {!isPaid && (
-                            <button
-                              onClick={() => openPaymentModal(debt)}
-                              className={`px-3 py-1.5 rounded-lg text-white font-bold text-xs flex items-center gap-1 shadow-sm transition active:scale-95 ${
-                                debt.type === 'WE_DEMAND'
-                                  ? 'bg-emerald-600 hover:bg-emerald-500'
-                                  : 'bg-amber-600 hover:bg-amber-500'
-                              }`}
-                            >
-                              <DollarSign className="w-3.5 h-3.5" />
-                              <span>Lipa</span>
-                            </button>
-                          )}
-
-                          {debt.payments && debt.payments.length > 0 && (
-                            <button
-                              onClick={() => setViewingHistoryDebt(debt)}
-                              className="p-1.5 rounded-lg bg-slate-800 text-blue-400 hover:text-blue-300 transition"
-                              title="Historia ya Malipo"
-                            >
-                              <History className="w-4 h-4" />
-                            </button>
-                          )}
-
-                          <button
-                            onClick={() => openEditModal(debt)}
-                            className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition"
-                            title="Hariri"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-
-                          <button
-                            onClick={() => setDeletingDebt(debt)}
-                            className="p-1.5 rounded-lg bg-slate-800 text-rose-400 hover:bg-rose-900/40 transition"
-                            title="Futa"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Desktop Table View (lg+) */}
-              <div className="hidden lg:block overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-slate-800 bg-slate-950/80 text-slate-400 font-semibold uppercase text-[10px] tracking-wider">
-                      <th className="py-3 px-4">Aina</th>
-                      <th className="py-3 px-4">Mteja / Mtoa Huduma</th>
-                      <th className="py-3 px-4">Bidhaa / Maelezo</th>
-                      <th className="py-3 px-4">Jumla ya Deni</th>
-                      <th className="py-3 px-4">Kiasi Kilicholipwa</th>
-                      <th className="py-3 px-4">Salio Lililobaki (Remained)</th>
-                      <th className="py-3 px-4">Tarehe ya Kulipa</th>
-                      <th className="py-3 px-4">Hali (Status)</th>
-                      <th className="py-3 px-4 text-right">Vitendo (Actions)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60">
-                    {filteredDebts.map(debt => {
-                      const isPaid = debt.status === 'PAID';
-                      const isPartiallyPaid = debt.status === 'PARTIALLY_PAID';
-                      const isOverdue = debt.status === 'OVERDUE';
-                      const isDueToday = debt.status === 'DUE_TODAY';
-                      const overdueDays = isOverdue ? DebtService.getOverdueDays(debt.dueDate) : 0;
-                      const paidAmount = debt.paidAmount || (isPaid ? debt.amount : 0);
-                      const remainingAmount = debt.remainingAmount !== undefined ? debt.remainingAmount : (isPaid ? 0 : Math.max(0, debt.amount - paidAmount));
-                      const paymentsCount = debt.payments?.length || (paidAmount > 0 ? 1 : 0);
-
-                      return (
-                        <tr
-                          key={debt.id}
-                          className={`hover:bg-slate-850/60 transition ${
-                            isOverdue && !isPaid ? 'bg-rose-950/10' : ''
-                          }`}
-                        >
-                          {/* Type */}
-                          <td className="py-3.5 px-4 whitespace-nowrap">
-                            {debt.type === 'WE_DEMAND' ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-semibold">
-                                <ArrowDownLeft className="w-3 h-3" /> Tunadai
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-semibold">
-                                <ArrowUpRight className="w-3 h-3" /> Wanatudai
-                              </span>
+                        {/* Actions */}
+                        <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {!isPaid && (
+                              <button
+                                onClick={() => openPaymentModal(debt)}
+                                className={`px-2.5 py-1.5 rounded text-white font-bold text-xs flex items-center gap-1 shadow-sm transition ${
+                                  debt.type === 'WE_DEMAND'
+                                    ? 'bg-emerald-600 hover:bg-emerald-500'
+                                    : 'bg-amber-600 hover:bg-amber-500'
+                                }`}
+                                title="Weka malipo ya deni hili"
+                              >
+                                <DollarSign className="w-3.5 h-3.5" />
+                                <span>Lipa</span>
+                              </button>
                             )}
-                          </td>
 
-                          {/* Debtor Name & Contact */}
-                          <td className="py-3.5 px-4 font-semibold text-white">
-                            <div className="flex items-center gap-1.5">
-                              <span>{debt.debtorName}</span>
-                            </div>
-                            {debt.contact && (
-                              <div className="flex items-center gap-1 font-mono text-[11px] text-slate-400 font-normal mt-0.5">
-                                <Phone className="w-3 h-3 text-slate-500" />
-                                <span>{debt.contact}</span>
-                              </div>
-                            )}
-                          </td>
-
-                          {/* Product / Description */}
-                          <td className="py-3.5 px-4 text-slate-300">
-                            <div className="font-medium max-w-xs truncate">{debt.productDescription || '—'}</div>
-                            {debt.notes && (
-                              <div className="text-[10px] text-slate-500 truncate max-w-xs">
-                                {debt.notes}
-                              </div>
-                            )}
-                          </td>
-
-                          {/* Total Amount */}
-                          <td className="py-3.5 px-4 font-mono font-semibold text-slate-300 whitespace-nowrap">
-                            {formatCurrency(debt.amount, settings.currencySymbol)}
-                          </td>
-
-                          {/* Paid Amount */}
-                          <td className="py-3.5 px-4 font-mono whitespace-nowrap">
-                            <span className={paidAmount > 0 ? 'text-emerald-400 font-bold' : 'text-slate-500'}>
-                              {formatCurrency(paidAmount, settings.currencySymbol)}
-                            </span>
-                            {paymentsCount > 1 && (
+                            {(debt.payments && debt.payments.length > 0) && (
                               <button
                                 onClick={() => setViewingHistoryDebt(debt)}
-                                className="block text-[10px] text-blue-400 hover:underline mt-0.5 font-sans"
+                                className="p-1.5 rounded hover:bg-slate-800 text-blue-400 hover:text-blue-300 transition"
+                                title="Angalia Historia ya Malipo (Payment History)"
                               >
-                                ({paymentsCount} awamu)
+                                <History className="w-4 h-4" />
                               </button>
                             )}
-                          </td>
 
-                          {/* Remaining Amount */}
-                          <td className="py-3.5 px-4 font-mono font-bold text-sm whitespace-nowrap">
-                            {remainingAmount <= 0 ? (
-                              <span className="text-emerald-400 text-xs flex items-center gap-1">
-                                <Check className="w-3.5 h-3.5" /> 0 (Hakuna Deni)
-                              </span>
-                            ) : (
-                              <span className={debt.type === 'WE_DEMAND' ? 'text-emerald-300 font-extrabold' : 'text-amber-300 font-extrabold'}>
-                                {formatCurrency(remainingAmount, settings.currencySymbol)}
-                              </span>
-                            )}
-                          </td>
+                            <button
+                              onClick={() => openEditModal(debt)}
+                              className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition"
+                              title="Hariri rekodi"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
 
-                          {/* Due Date */}
-                          <td className="py-3.5 px-4 whitespace-nowrap">
-                            {debt.dueDate ? (
-                              <div>
-                                <div className="font-mono text-slate-300">
-                                  {formatDate(debt.dueDate)}
-                                </div>
-                                {isOverdue && !isPaid && (
-                                  <div className="text-[10px] font-semibold text-rose-400 flex items-center gap-1 mt-0.5">
-                                    <AlertTriangle className="w-3 h-3" /> Zimepita siku {overdueDays}
-                                  </div>
-                                )}
-                                {isDueToday && !isPaid && (
-                                  <div className="text-[10px] font-semibold text-amber-400 flex items-center gap-1 mt-0.5">
-                                    <Clock className="w-3 h-3" /> Inatakiwa leo
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-slate-500">Haina tarehe</span>
-                            )}
-                          </td>
-
-                          {/* Status Badge */}
-                          <td className="py-3.5 px-4 whitespace-nowrap">
-                            {isPaid ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-700/80 text-[10px] font-bold">
-                                <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Imelipwa Kamili
-                              </span>
-                            ) : isPartiallyPaid ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-950/80 text-blue-300 border border-blue-700/80 text-[10px] font-bold">
-                                <Clock className="w-3 h-3 text-blue-400" /> Imelipwa Sehemu
-                              </span>
-                            ) : isOverdue ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-950/80 text-rose-300 border border-rose-800 text-[10px] font-semibold">
-                                <AlertTriangle className="w-3 h-3" /> Imechelewa
-                              </span>
-                            ) : isDueToday ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-800 text-[10px] font-semibold">
-                                <Clock className="w-3 h-3" /> Inatakiwa Leo
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-semibold">
-                                Inasubiri (Pending)
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Actions */}
-                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                            <div className="flex items-center justify-end gap-1.5">
-                              {!isPaid && (
-                                <button
-                                  onClick={() => openPaymentModal(debt)}
-                                  className={`px-2.5 py-1.5 rounded text-white font-bold text-xs flex items-center gap-1 shadow-sm transition ${
-                                    debt.type === 'WE_DEMAND'
-                                      ? 'bg-emerald-600 hover:bg-emerald-500'
-                                      : 'bg-amber-600 hover:bg-amber-500'
-                                  }`}
-                                  title="Weka malipo ya deni hili"
-                                >
-                                  <DollarSign className="w-3.5 h-3.5" />
-                                  <span>Lipa</span>
-                                </button>
-                              )}
-
-                              {(debt.payments && debt.payments.length > 0) && (
-                                <button
-                                  onClick={() => setViewingHistoryDebt(debt)}
-                                  className="p-1.5 rounded hover:bg-slate-800 text-blue-400 hover:text-blue-300 transition"
-                                  title="Angalia Historia ya Malipo (Payment History)"
-                                >
-                                  <History className="w-4 h-4" />
-                                </button>
-                              )}
-
-                              <button
-                                onClick={() => openEditModal(debt)}
-                                className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition"
-                                title="Hariri rekodi"
-                              >
-                                <Edit2 className="w-3.5 h-3.5" />
-                              </button>
-
-                              <button
-                                onClick={() => setDeletingDebt(debt)}
-                                className="p-1.5 rounded hover:bg-rose-900/40 text-slate-400 hover:text-rose-400 transition"
-                                title="Futa rekodi"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
+                            <button
+                              onClick={() => setDeletingDebt(debt)}
+                              className="p-1.5 rounded hover:bg-rose-900/40 text-slate-400 hover:text-rose-400 transition"
+                              title="Futa rekodi"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
       {/* CREATE / EDIT DEBT MODAL */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4 backdrop-blur-xs overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150 my-auto max-h-[92vh] flex flex-col">
-            <div className="p-3.5 sm:p-4 bg-slate-850 border-b border-slate-800 flex items-center justify-between shrink-0">
-              <h3 className="font-bold text-xs sm:text-sm text-white flex items-center gap-2">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 bg-slate-850 border-b border-slate-800 flex items-center justify-between">
+              <h3 className="font-bold text-sm text-white flex items-center gap-2">
                 <FileText className="w-4 h-4 text-emerald-400" />
                 <span>
                   {editingDebt
@@ -935,13 +782,13 @@ export const DebtManagement: React.FC = () => {
               </h3>
               <button
                 onClick={() => setIsCreateModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
+                className="text-slate-400 hover:text-white p-1 rounded"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveDebt} className="p-4 sm:p-5 space-y-3.5 overflow-y-auto text-xs flex-1">
+            <form onSubmit={handleSaveDebt} className="p-5 space-y-4">
               {/* Type Selection */}
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1.5">
