@@ -1,8 +1,10 @@
 import { db } from '../db/storage';
 import { User, UserRole } from '../types';
 import { hashPassword, verifyPassword, generateUUID } from '../utils/crypto';
+import { CloudflareApi } from './cloudflareApi';
 
 const AUTH_STORAGE_KEY = 'omnibiz_active_session_v1';
+const REMEMBER_KEY = 'omnibiz_remember_me';
 
 export class AuthService {
   public static async login(
@@ -15,6 +17,53 @@ export class AuthService {
     const user = users.find(u => u.username.toLowerCase() === trimmedUsername);
 
     if (!user) {
+      // Try cloud login if local user not found
+      try {
+        const online = await CloudflareApi.checkConnection();
+        if (online) {
+          const cloudResult = await CloudflareApi.login(username, plainPassword);
+          if (cloudResult.success && cloudResult.user) {
+            const cloudUser: User = {
+              id: cloudResult.user.id,
+              username: cloudResult.user.username,
+              name: cloudResult.user.name,
+              role: cloudResult.user.role,
+              passwordHash: await hashPassword(plainPassword),
+              color: cloudResult.user.color || 'blue',
+              status: cloudResult.user.status || 'ACTIVE',
+              assignedShopIds: cloudResult.user.assignedShopIds || [],
+              avatarUrl: cloudResult.user.avatarUrl || cloudResult.user.avatar_url || null,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+            
+            const updatedUsers = [...db.getUsers().filter(u => u.id !== cloudUser.id), cloudUser];
+            db.saveUsers(updatedUsers);
+            
+            if (cloudResult.token) {
+              CloudflareApi.setToken(cloudResult.token);
+            }
+            
+            AuthService.setActiveUser(cloudUser);
+            
+            db.addAuditLog({
+              id: generateUUID(),
+              userId: cloudUser.id,
+              userName: cloudUser.name,
+              action: 'USER_LOGIN',
+              details: `${cloudUser.role} login successful via cloud (${cloudUser.username})`,
+              entityType: 'AUTH',
+              entityId: cloudUser.id,
+              timestamp: new Date().toISOString(),
+            });
+            
+            return { success: true, user: cloudUser };
+          }
+        }
+      } catch (error) {
+        console.log('Cloud login failed, continuing offline:', error);
+      }
+      
       return { success: false, error: 'Account not found. Please check your username.' };
     }
 
@@ -32,24 +81,12 @@ export class AuthService {
       };
     }
 
-    // Verify password hash
     const isValid = await verifyPassword(plainPassword, user.passwordHash);
     if (!isValid) {
-      // Fallback check for admin 52775277 or seller default passwords
-      if (plainPassword === '52775277' && user.role === 'ADMIN') {
-        const newHash = await hashPassword('52775277');
-        user.passwordHash = newHash;
-        db.saveUsers(users);
-      } else if (plainPassword === 'seller123' && user.role === 'SELLER') {
-        const newHash = await hashPassword('seller123');
-        user.passwordHash = newHash;
-        db.saveUsers(users);
-      } else {
-        return { success: false, error: 'Incorrect password. Please try again.' };
-      }
+      return { success: false, error: 'Incorrect password. Please try again.' };
     }
 
-    // Persist session
+    // Persist session locally
     AuthService.setActiveUser(user);
 
     // Audit log
@@ -64,6 +101,17 @@ export class AuthService {
       timestamp: new Date().toISOString(),
     });
 
+    // Try cloud login in background
+    CloudflareApi.login(username, plainPassword)
+      .then(result => {
+        if (result.success && result.token) {
+          CloudflareApi.setToken(result.token);
+        }
+      })
+      .catch(() => {
+        console.log('Cloud login deferred - will sync later');
+      });
+
     return { success: true, user };
   }
 
@@ -72,7 +120,6 @@ export class AuthService {
       const stored = localStorage.getItem(AUTH_STORAGE_KEY);
       if (!stored) return null;
       const parsed = JSON.parse(stored) as User;
-      // Refresh user from database to ensure up-to-date color/status
       const users = db.getUsers();
       const current = users.find(u => u.id === parsed.id);
       if (current && current.status === 'ACTIVE') {
@@ -92,6 +139,35 @@ export class AuthService {
     }
   }
 
+  // ==========================================
+  // REMEMBER ME FUNCTIONS
+  // ==========================================
+  
+  public static setRememberMe(user: User): void {
+    localStorage.setItem(REMEMBER_KEY, JSON.stringify({ userId: user.id }));
+  }
+
+  public static clearRememberMe(): void {
+    localStorage.removeItem(REMEMBER_KEY);
+  }
+
+  public static getRememberedUser(): User | null {
+    try {
+      const remembered = localStorage.getItem(REMEMBER_KEY);
+      if (!remembered) return null;
+      const { userId } = JSON.parse(remembered);
+      const users = db.getUsers();
+      const user = users.find(u => u.id === userId);
+      if (user && user.status === 'ACTIVE') {
+        AuthService.setActiveUser(user);
+        return user;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   public static logout(): void {
     const user = AuthService.getActiveUser();
     if (user) {
@@ -105,6 +181,11 @@ export class AuthService {
         entityId: user.id,
         timestamp: new Date().toISOString(),
       });
+      
+      CloudflareApi.logout(user.id).catch(() => {
+        console.log('Cloud logout deferred');
+      });
+      CloudflareApi.clearToken();
     }
     AuthService.setActiveUser(null);
   }
@@ -126,7 +207,6 @@ export class AuthService {
     newPassword: string,
     callerUser: User
   ): Promise<{ success: boolean; error?: string }> {
-    // Sellers can change only their own password. Admin can change any seller's password.
     if (callerUser.role !== 'ADMIN' && callerUser.id !== userId) {
       return { success: false, error: 'Permission denied: You cannot change another user password.' };
     }
@@ -141,7 +221,6 @@ export class AuthService {
       return { success: false, error: 'User not found.' };
     }
 
-    // If seller is changing own password, verify old password first
     if (callerUser.id === userId && callerUser.role === 'SELLER') {
       const isValid = await verifyPassword(currentPassword, targetUser.passwordHash);
       if (!isValid) {
@@ -162,6 +241,76 @@ export class AuthService {
       action: 'PASSWORD_CHANGE',
       details: `Password changed for user ${targetUser.username} by ${callerUser.name}`,
       entityType: 'SELLER',
+      entityId: targetUser.id,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { success: true };
+  }
+
+  // ==========================================
+  // CHANGE ADMIN USERNAME
+  // ==========================================
+  public static changeAdminUsername(
+    adminUserId: string,
+    newUsername: string,
+    currentUser: User
+  ): { success: boolean; error?: string } {
+    if (currentUser.role !== 'ADMIN') {
+      return { success: false, error: 'Permission denied: Only Admin can change username.' };
+    }
+
+    if (!newUsername.trim() || newUsername.trim().length < 3) {
+      return { success: false, error: 'Username must be at least 3 characters.' };
+    }
+
+    const cleanUsername = newUsername.trim().toLowerCase();
+    const users = db.getUsers();
+    
+    if (users.some(u => u.username.toLowerCase() === cleanUsername && u.id !== adminUserId)) {
+      return { success: false, error: `Username '${cleanUsername}' is already taken.` };
+    }
+
+    const targetUser = users.find(u => u.id === adminUserId);
+    if (!targetUser) {
+      return { success: false, error: 'Admin user not found.' };
+    }
+
+    targetUser.username = cleanUsername;
+    targetUser.updatedAt = new Date().toISOString();
+    db.saveUsers(users);
+
+    AuthService.setActiveUser(targetUser);
+
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'UPDATE_SELLER',
+      entityType: 'SELLER',
+      entityId: targetUser.id,
+      payload: {
+        id: targetUser.id,
+        username: targetUser.username,
+        name: targetUser.name,
+        role: targetUser.role,
+        passwordHash: targetUser.passwordHash,
+        color: targetUser.color,
+        status: targetUser.status,
+        assignedShopIds: targetUser.assignedShopIds,
+        avatarUrl: targetUser.avatarUrl || null,
+        createdAt: targetUser.createdAt,
+        updatedAt: targetUser.updatedAt,
+      },
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+
+    db.addAuditLog({
+      id: generateUUID(),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      action: 'USERNAME_CHANGE',
+      details: `Admin username changed to '${cleanUsername}'`,
+      entityType: 'AUTH',
       entityId: targetUser.id,
       timestamp: new Date().toISOString(),
     });
