@@ -1,9 +1,11 @@
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useRef } from 'react';
 import { db, DatabaseState } from '../db/storage';
 import { AuthService } from '../services/authService';
 import { SyncService, SyncState } from '../services/syncService';
+import { CloudflareApi } from '../services/cloudflareApi';
 import { User, Sale, ToastMessage, Shop } from '../types';
 import { getColorOption } from '../utils/colors';
+import { generateUUID } from '../utils/crypto';
 
 interface AppContextType {
   currentUser: User | null;
@@ -29,6 +31,8 @@ interface AppContextType {
   // Sync status
   syncStatus: { state: SyncState; pendingCount: number };
   triggerSync: () => Promise<void>;
+  // Settings
+  updateSettings: (settings: any) => void;
   // Seller color theme
   sellerColor: ReturnType<typeof getColorOption>;
 }
@@ -36,7 +40,17 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<User | null>(() => AuthService.getActiveUser());
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    // Check active session first
+    const active = AuthService.getActiveUser();
+    if (active) return active;
+    
+    // Check remembered user
+    const remembered = AuthService.getRememberedUser();
+    if (remembered) return remembered;
+    
+    return null;
+  });
   const [dbState, setDbState] = useState<DatabaseState>(() => db.getState());
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -46,6 +60,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const saved = localStorage.getItem('diocres_selected_shop_id');
     return saved || 'ALL';
   });
+  
+  const isSyncingRef = useRef<boolean>(false);
 
   const setSelectedShopId = (shopId: string) => {
     setSelectedShopIdState(shopId);
@@ -61,7 +77,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return allShops;
     }
 
-    // For Seller, only active shops they are assigned to
     const assigned = currentUser.assignedShopIds || [];
     return allShops.filter(s => s.status === 'ACTIVE' && assigned.includes(s.id));
   }, [dbState.shops, currentUser]);
@@ -79,23 +94,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setDbState({ ...state });
       setSyncStatus(SyncService.getSyncStatus());
 
-      // If user is logged in, refresh their current state
       if (currentUser) {
         const freshUser = state.users.find(u => u.id === currentUser.id);
         if (freshUser) {
           if (freshUser.status !== 'ACTIVE') {
-            // Force logout if account deactivated by admin
             AuthService.logout();
             setCurrentUser(null);
-            setToasts(prev => [
-              ...prev,
-              {
-                id: Date.now().toString(),
-                type: 'warning',
-                title: 'Account Deactivated',
-                description: 'Your seller account has been deactivated by an Administrator.',
-              },
-            ]);
+            setToasts(prev => [...prev, {
+              id: Date.now().toString(),
+              type: 'warning',
+              title: 'Account Deactivated',
+              description: 'Your account has been deactivated by an Administrator.',
+            }]);
           } else {
             setCurrentUser(freshUser);
             AuthService.setActiveUser(freshUser);
@@ -105,6 +115,75 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     return () => unsubscribe();
+  }, [currentUser]);
+
+  // LIVE SYNC: Continuous sync every 2 seconds when online
+  useEffect(() => {
+    const liveSync = async () => {
+      if (isSyncingRef.current) return;
+      
+      try {
+        const online = await CloudflareApi.checkConnection();
+        
+        if (online) {
+          isSyncingRef.current = true;
+          
+          const pendingCount = SyncService.getPendingCount();
+          if (pendingCount > 0) {
+            await SyncService.processSyncQueue(currentUser || undefined);
+          }
+          
+          const pullResult = await CloudflareApi.pullSync();
+          
+          if (pullResult.success && pullResult.data) {
+            SyncService.applyCloudData(pullResult.data);
+            
+            const now = new Date().toISOString();
+            localStorage.setItem('omnibiz_last_synced_at', now);
+            
+            const state = db.getState();
+            setDbState({ ...state });
+            setSyncStatus(SyncService.getSyncStatus());
+          }
+          
+          isSyncingRef.current = false;
+        }
+      } catch (error) {
+        console.log('[LiveSync] Error:', error);
+        isSyncingRef.current = false;
+      }
+    };
+
+    liveSync();
+    const interval = setInterval(liveSync, 2000);
+    return () => clearInterval(interval);
+  }, [currentUser]);
+
+  // Listen for online/offline events
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log('[LiveSync] Connection restored');
+      if (currentUser) {
+        SyncService.processSyncQueue(currentUser).then(() => {
+          const state = db.getState();
+          setDbState({ ...state });
+          setSyncStatus(SyncService.getSyncStatus());
+        });
+      }
+    };
+
+    const handleOffline = () => {
+      console.log('[LiveSync] Connection lost');
+      setSyncStatus({ state: 'OFFLINE_LOCAL', pendingCount: SyncService.getPendingCount() });
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, [currentUser]);
 
   // Ensure seller has a valid shop selected
@@ -117,7 +196,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
 
       if (sellerShops.length > 0) {
-        // If current selection is 'ALL' or not in seller's shops, auto select first assigned shop
         const isCurrentValid = sellerShops.some(s => s.id === selectedShopId);
         if (!isCurrentValid || selectedShopId === 'ALL') {
           setSelectedShopId(sellerShops[0].id);
@@ -137,9 +215,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (user.role === 'ADMIN') {
       setActiveTab('dashboard');
-      // Keep previous shop selection or 'ALL'
     } else {
-      setActiveTab('new_sale'); // sellers land directly on fast POS
+      setActiveTab('new_sale');
       const sellerShops = (dbState.shops || []).filter(
         s => s.status === 'ACTIVE' && (user.assignedShopIds || []).includes(s.id)
       );
@@ -151,7 +228,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addToast({
       type: 'success',
       title: `Welcome back, ${user.name}`,
-      description: `Logged in to ${user.role} Portal (Offline-Ready)`,
+      description: `Logged in as ${user.role}`,
     });
   };
 
@@ -162,7 +239,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addToast({
       type: 'info',
       title: 'Logged Out',
-      description: 'Session ended securely. Local data remains saved.',
+      description: 'Session ended securely.',
     });
   };
 
@@ -189,18 +266,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const triggerSync = async () => {
     setSyncStatus({ state: 'SYNCING', pendingCount: syncStatus.pendingCount });
-    const res = await SyncService.simulateServerSync();
+    
+    const res = await SyncService.processSyncQueue(currentUser || undefined);
+    
     setSyncStatus(SyncService.getSyncStatus());
+    
     if (res.success) {
       addToast({
         type: 'success',
         title: 'Synchronization Complete',
-        description: res.syncedCount > 0 ? `Synced ${res.syncedCount} queued records to server simulation.` : 'All local records are up to date.',
+        description: res.processedCount > 0 
+          ? `Synced ${res.processedCount} records to cloud.` 
+          : 'All records up to date.',
+      });
+    } else {
+      addToast({
+        type: 'warning',
+        title: 'Sync Status',
+        description: res.message || 'Sync completed.',
       });
     }
   };
 
-  // Dynamically resolve seller color
+  const updateSettings = (newSettings: any) => {
+    const currentSettings = db.getSettings();
+    const updatedSettings = { ...currentSettings, ...newSettings };
+    db.saveSettings(updatedSettings);
+    
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'UPDATE_SETTINGS',
+      entityType: 'SETTINGS',
+      entityId: 'global',
+      payload: updatedSettings,
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+    
+    setDbState(db.getState());
+    setSyncStatus(SyncService.getSyncStatus());
+  };
+
   const sellerColor = useMemo(() => {
     return getColorOption(currentUser?.color || 'blue');
   }, [currentUser?.color]);
@@ -227,6 +333,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         closeReceipt,
         syncStatus,
         triggerSync,
+        updateSettings,
         sellerColor,
       }}
     >
