@@ -143,7 +143,7 @@ export class PurchaseService {
       userId: currentUser.id,
       userName: currentUser.name,
       action: 'RECORD_PURCHASE',
-      details: `Recorded purchase ${purchaseNumber} from ${newPurchase.supplierName} for [${shop.name}] ($${newPurchase.totalAmount.toFixed(2)})`,
+      details: `Recorded purchase ${purchaseNumber} from ${newPurchase.supplierName} for [${shop.name}] (${db.getSettings().currencySymbol} ${newPurchase.totalAmount.toLocaleString()})`,
       entityType: 'PURCHASE',
       entityId: purchaseId,
       timestamp: new Date().toISOString(),
@@ -169,6 +169,7 @@ export class PurchaseService {
 
   /**
    * Get purchases filtered by shop, supplier, date.
+   * Admin sees all purchases, Seller sees only their own purchases.
    */
   public static getPurchases(
     options?: {
@@ -179,9 +180,14 @@ export class PurchaseService {
       startDate?: string;
       endDate?: string;
     },
-    _currentUser?: User
+    currentUser?: User
   ): Purchase[] {
     let purchases = db.getPurchases();
+
+    // Filter by user role
+    if (currentUser && currentUser.role === 'SELLER') {
+      purchases = purchases.filter(p => p.createdByUserId === currentUser.id);
+    }
 
     if (options?.shopId && options.shopId !== 'ALL') {
       purchases = purchases.filter(p => p.shopId === options.shopId);
