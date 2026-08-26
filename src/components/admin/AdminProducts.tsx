@@ -51,6 +51,7 @@ export const AdminProducts: React.FC = () => {
   const [unit, setUnit] = useState('pcs');
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
   const [formError, setFormError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   // Image Viewer Modal State
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
@@ -127,17 +128,20 @@ export const AdminProducts: React.FC = () => {
     }
   };
 
-  const handleSaveProduct = (e: React.FormEvent) => {
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
+    setIsSaving(true);
 
     if (!name.trim()) {
       setFormError('Product title is required.');
+      setIsSaving(false);
       return;
     }
 
     if (!productShopId) {
       setFormError('Please select a shop/business unit for this product.');
+      setIsSaving(false);
       return;
     }
 
@@ -146,72 +150,70 @@ export const AdminProducts: React.FC = () => {
 
     if (isNaN(sPrice) || sPrice < 0) {
       setFormError('Please enter a valid selling price.');
+      setIsSaving(false);
       return;
     }
 
-    if (editingProduct) {
-      const res = ProductService.updateProduct(
-        editingProduct.id,
-        {
-          shopId: productShopId,
-          name,
-          sku: sku.trim(),
-          barcode: barcode.trim(),
-          categoryId,
-          purchasePrice: pPrice,
-          sellingPrice: sPrice,
-          currentStock: parseInt(currentStock, 10) || 0,
-          minStock: parseInt(minStock, 10) || 5,
-          unit,
-          images: productImages,
-        },
-        currentUser
-      );
+    try {
+      let result;
+      
+      if (editingProduct) {
+        result = await ProductService.updateProduct(
+          editingProduct.id,
+          {
+            shopId: productShopId,
+            name,
+            sku: sku.trim(),
+            barcode: barcode.trim(),
+            categoryId,
+            purchasePrice: pPrice,
+            sellingPrice: sPrice,
+            currentStock: parseInt(currentStock, 10) || 0,
+            minStock: parseInt(minStock, 10) || 5,
+            unit,
+            images: productImages,
+          },
+          currentUser
+        );
+      } else {
+        result = await ProductService.createProduct(
+          {
+            shopId: productShopId,
+            name,
+            sku: sku.trim() || undefined,
+            barcode: barcode.trim() || undefined,
+            categoryId,
+            purchasePrice: pPrice,
+            sellingPrice: sPrice,
+            currentStock: parseInt(currentStock, 10) || 0,
+            minStock: parseInt(minStock, 10) || 5,
+            unit,
+            images: productImages,
+          },
+          currentUser
+        );
+      }
 
-      if (res.success) {
+      if (result.success) {
         addToast({
           type: 'success',
-          title: 'Product Updated',
-          description: `'${name}' details updated in local database.`,
+          title: editingProduct ? 'Product Updated' : 'Product Created',
+          description: editingProduct ? `'${name}' details updated.` : `'${name}' added to inventory catalog.`,
         });
         setIsModalOpen(false);
       } else {
-        setFormError(res.error || 'Failed to update product.');
+        setFormError(result.error || 'Failed to save product.');
       }
-    } else {
-      const res = ProductService.createProduct(
-        {
-          shopId: productShopId,
-          name,
-          sku: sku.trim() || undefined,
-          barcode: barcode.trim() || undefined,
-          categoryId,
-          purchasePrice: pPrice,
-          sellingPrice: sPrice,
-          currentStock: parseInt(currentStock, 10) || 0,
-          minStock: parseInt(minStock, 10) || 5,
-          unit,
-          images: productImages,
-        },
-        currentUser
-      );
-
-      if (res.success) {
-        addToast({
-          type: 'success',
-          title: 'Product Created',
-          description: `'${name}' added to inventory catalog.`,
-        });
-        setIsModalOpen(false);
-      } else {
-        setFormError(res.error || 'Failed to create product.');
-      }
+    } catch (error: any) {
+      setFormError(error.message || 'An error occurred while saving product.');
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const handleToggleStatus = (p: Product) => {
+  const handleToggleStatus = async (p: Product) => {
     const newStatus = p.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-    const res = ProductService.toggleProductStatus(p.id, newStatus, currentUser);
+    const res = await ProductService.toggleProductStatus(p.id, newStatus, currentUser);
     if (res.success) {
       addToast({
         type: 'info',
@@ -753,7 +755,6 @@ export const AdminProducts: React.FC = () => {
                 const shopCats = categories.filter(c => c.shopId === shop.id);
                 const totalShopProducts = dbState.products.filter(p => p.shopId === shop.id).length;
 
-                // Format friendly header title like "Clothes Shop Categories" or "Hardware Categories"
                 const cleanShopName = shop.name.trim();
                 const shopHeaderTitle = cleanShopName.toLowerCase().endsWith('categories')
                   ? cleanShopName
@@ -1098,9 +1099,10 @@ export const AdminProducts: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition"
+                  disabled={isSaving}
+                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition disabled:opacity-50"
                 >
-                  {editingProduct ? 'Save Changes' : 'Create Product'}
+                  {isSaving ? 'Saving...' : editingProduct ? 'Save Changes' : 'Create Product'}
                 </button>
               </div>
             </form>
