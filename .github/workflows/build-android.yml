@@ -38,6 +38,11 @@ jobs:
         run: |
           yes | sdkmanager --licenses || true
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
       - name: Install dependencies
         run: npm install
 
@@ -48,16 +53,29 @@ jobs:
         run: |
           npx cap sync android
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x ./android/gradlew
+      - name: Regenerate and validate Gradle Wrapper
+        working-directory: ./android
+        run: |
+          gradle wrapper --gradle-version 8.11.1 --distribution-type all
+          chmod +x ./gradlew
 
       - name: Build Android Debug APK (Installable directly on any phone)
         working-directory: ./android
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
+        run: |
+          if ./gradlew --version >/dev/null 2>&1; then
+            ./gradlew assembleDebug --stacktrace --no-daemon
+          else
+            gradle assembleDebug --stacktrace --no-daemon
+          fi
 
       - name: Build Android Release APK
         working-directory: ./android
-        run: ./gradlew assembleRelease -x lint --stacktrace --no-daemon || true
+        run: |
+          if ./gradlew --version >/dev/null 2>&1; then
+            ./gradlew assembleRelease -x lint --stacktrace --no-daemon || true
+          else
+            gradle assembleRelease -x lint --stacktrace --no-daemon || true
+          fi
 
       - name: Prepare APK outputs
         run: |
