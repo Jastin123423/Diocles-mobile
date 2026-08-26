@@ -2,6 +2,26 @@ import { db } from '../db/storage';
 import { Product, ProductImage, ProductStatus, User } from '../types';
 import { generateUUID } from '../utils/crypto';
 import { normalizeProductImages } from '../utils/imageUtils';
+import { CloudflareApi } from './cloudflareApi';
+
+// Helper to convert base64 to Blob
+function base64ToBlob(dataUrl: string, mimeType: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    try {
+      const base64 = dataUrl.split(',')[1];
+      const binary = atob(base64);
+      const array = new Uint8Array(binary.length);
+      
+      for (let i = 0; i < binary.length; i++) {
+        array[i] = binary.charCodeAt(i);
+      }
+      
+      resolve(new Blob([array], { type: mimeType }));
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
 
 export class ProductService {
   public static getProducts(options?: {
@@ -56,10 +76,56 @@ export class ProductService {
   }
 
   /**
-   * Seller or Admin can create a new product.
-   * Associated with the target shop.
+   * Upload product images to R2 and return updated images with URLs
    */
-  public static createProduct(
+  private static async uploadImagesToR2(
+    images: ProductImage[],
+    productId: string
+  ): Promise<ProductImage[]> {
+    const uploadedImages: ProductImage[] = [];
+
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+
+      // Skip if already synced with R2 URL
+      if (img.syncStatus === 'SYNCED' && img.dataUrl.includes('m.diocres.jobsreport.online')) {
+        uploadedImages.push(img);
+        continue;
+      }
+
+      try {
+        const online = await CloudflareApi.checkConnection();
+        if (!online) {
+          uploadedImages.push(img);
+          continue;
+        }
+
+        const blob = await base64ToBlob(img.dataUrl, img.mimeType);
+        const result = await CloudflareApi.uploadImage(blob, 'product', productId, i);
+
+        if (result.success && result.url) {
+          uploadedImages.push({
+            ...img,
+            dataUrl: result.url,
+            thumbnailUrl: result.url,
+            syncStatus: 'SYNCED',
+          });
+        } else {
+          uploadedImages.push(img);
+        }
+      } catch (error) {
+        console.log(`Image ${i} upload failed, keeping local:`, error);
+        uploadedImages.push(img);
+      }
+    }
+
+    return uploadedImages;
+  }
+
+  /**
+   * Seller or Admin can create a new product.
+   */
+  public static async createProduct(
     data: {
       shopId: string;
       name: string;
@@ -76,7 +142,7 @@ export class ProductService {
       imageUrl?: string;
     },
     currentUser: User
-  ): { success: boolean; product?: Product; error?: string } {
+  ): Promise<{ success: boolean; product?: Product; error?: string }> {
     if (!data.name?.trim()) {
       return { success: false, error: 'Product name is required.' };
     }
@@ -98,7 +164,6 @@ export class ProductService {
     const cleanSku = data.sku?.trim() || `SKU-${Date.now().toString().slice(-6)}`;
     const cleanBarcode = data.barcode?.trim() || `${Math.floor(100000000000 + Math.random() * 900000000000)}`;
 
-    // SKU uniqueness within the shop
     const duplicateSku = products.find(
       p => p.shopId === data.shopId && p.sku.toLowerCase() === cleanSku.toLowerCase()
     );
@@ -107,9 +172,16 @@ export class ProductService {
     }
 
     const productId = generateUUID();
-    const normalizedImages = data.images && data.images.length > 0
+    
+    // Normalize images first
+    let normalizedImages = data.images && data.images.length > 0
       ? normalizeProductImages(data.images.map(img => ({ ...img, productId })))
       : undefined;
+
+    // Upload images to R2
+    if (normalizedImages && normalizedImages.length > 0) {
+      normalizedImages = await this.uploadImagesToR2(normalizedImages, productId);
+    }
 
     const mainImageUrl = normalizedImages && normalizedImages.length > 0
       ? (normalizedImages[0].thumbnailUrl || normalizedImages[0].dataUrl)
@@ -137,7 +209,6 @@ export class ProductService {
     const updated = [newProduct, ...products];
     db.saveProducts(updated);
 
-    // If initial stock is greater than 0, record initial inventory movement with shopId
     if (newProduct.currentStock > 0) {
       db.saveMovements([
         {
@@ -159,7 +230,6 @@ export class ProductService {
       ]);
     }
 
-    // Sync queue item
     db.enqueueSync({
       id: generateUUID(),
       operation: 'CREATE_PRODUCT',
@@ -170,7 +240,6 @@ export class ProductService {
       createdAt: new Date().toISOString(),
     });
 
-    // Audit log
     db.addAuditLog({
       id: generateUUID(),
       userId: currentUser.id,
@@ -188,11 +257,11 @@ export class ProductService {
   /**
    * Only Admin can edit existing products.
    */
-  public static updateProduct(
+  public static async updateProduct(
     id: string,
     updates: Partial<Omit<Product, 'id' | 'createdAt'>>,
     currentUser: User
-  ): { success: boolean; product?: Product; error?: string } {
+  ): Promise<{ success: boolean; product?: Product; error?: string }> {
     if (currentUser.role !== 'ADMIN') {
       return {
         success: false,
@@ -209,7 +278,6 @@ export class ProductService {
     const current = products[index];
     const targetShopId = updates.shopId || current.shopId;
 
-    // If SKU changed, check uniqueness within shop
     if (updates.sku && updates.sku !== current.sku) {
       const dup = products.find(
         p => p.id !== id && p.shopId === targetShopId && p.sku.toLowerCase() === updates.sku!.toLowerCase()
@@ -222,6 +290,7 @@ export class ProductService {
     let finalImages = updates.images !== undefined ? updates.images : current.images;
     if (finalImages && finalImages.length > 0) {
       finalImages = normalizeProductImages(finalImages.map(img => ({ ...img, productId: id })));
+      finalImages = await this.uploadImagesToR2(finalImages, id);
     } else {
       finalImages = undefined;
     }
@@ -241,7 +310,6 @@ export class ProductService {
     products[index] = updatedProduct;
     db.saveProducts(products);
 
-    // Sync queue
     db.enqueueSync({
       id: generateUUID(),
       operation: 'UPDATE_PRODUCT',
@@ -252,13 +320,12 @@ export class ProductService {
       createdAt: new Date().toISOString(),
     });
 
-    // Audit log
     db.addAuditLog({
       id: generateUUID(),
       userId: currentUser.id,
       userName: currentUser.name,
       action: 'UPDATE_PRODUCT',
-      details: `Updated product '${updatedProduct.name}' (Price: $${updatedProduct.sellingPrice})`,
+      details: `Updated product '${updatedProduct.name}' (Price: ${settings.currencySymbol || 'TSh'} ${updatedProduct.sellingPrice})`,
       entityType: 'PRODUCT',
       entityId: id,
       timestamp: new Date().toISOString(),
@@ -269,13 +336,12 @@ export class ProductService {
 
   /**
    * Toggle Product Active/Inactive status.
-   * Admin only. Permanent deletion is avoided to preserve historical sales.
    */
-  public static toggleProductStatus(
+  public static async toggleProductStatus(
     id: string,
     newStatus: ProductStatus,
     currentUser: User
-  ): { success: boolean; error?: string } {
+  ): Promise<{ success: boolean; error?: string }> {
     if (currentUser.role !== 'ADMIN') {
       return { success: false, error: 'Permission Denied: Only Admin can change product status.' };
     }
