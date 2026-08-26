@@ -17,6 +17,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Remove stale or corrupt Gradle wrapper jar
+        run: |
+          rm -f android/gradle/wrapper/gradle-wrapper.jar
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -42,10 +46,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-
-      - name: Clean stale wrapper binaries
-        run: |
-          rm -f android/gradle/wrapper/gradle-wrapper.jar
+          validate-wrappers: false
 
       - name: Install dependencies
         run: npm install
