@@ -191,7 +191,7 @@ export class SalesService {
       userId: currentUser.id,
       userName: currentUser.name,
       action: 'CREATE_SALE',
-      details: `Completed sale ${receiptNumber} in [${shop.name}] for ${settings.currencySymbol}${finalTotal.toFixed(2)} (${params.paymentMethod})`,
+      details: `Completed sale ${receiptNumber} in [${shop.name}] for ${settings.currencySymbol} ${finalTotal.toLocaleString()} (${params.paymentMethod})`,
       entityType: 'SALE',
       entityId: saleId,
       timestamp: new Date().toISOString(),
