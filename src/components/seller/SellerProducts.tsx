@@ -22,6 +22,7 @@ export const SellerProducts: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditDeniedModal, setShowEditDeniedModal] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // New Product Form State
   const [name, setName] = useState('');
@@ -55,62 +56,74 @@ export const SellerProducts: React.FC = () => {
     status: 'ACTIVE',
   });
 
-  const handleCreateProduct = (e: React.FormEvent) => {
+  const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
+    setIsSaving(true);
 
     if (!name.trim()) {
       setFormError('Product name is required.');
+      setIsSaving(false);
       return;
     }
 
     const price = parseFloat(sellingPrice);
     if (isNaN(price) || price < 0) {
       setFormError('Please enter a valid selling price.');
+      setIsSaving(false);
       return;
     }
 
     const costPrice = parseFloat(purchasePrice) || 0;
 
-    if (!currentUser) return;
+    if (!currentUser) {
+      setIsSaving(false);
+      return;
+    }
 
     const firstActiveCat = shopCategories.find(c => c.status !== 'INACTIVE');
 
-    const result = ProductService.createProduct(
-      {
-        shopId: targetShopId,
-        name,
-        sku: sku.trim() || undefined,
-        barcode: barcode.trim() || undefined,
-        categoryId: categoryId || firstActiveCat?.id || shopCategories[0]?.id || allCategories[0]?.id || 'cat-hardware',
-        purchasePrice: costPrice,
-        sellingPrice: price,
-        currentStock: parseInt(currentStock, 10) || 0,
-        minStock: parseInt(minStock, 10) || 5,
-        unit,
-        images: productImages,
-      },
-      currentUser
-    );
+    try {
+      const result = await ProductService.createProduct(
+        {
+          shopId: targetShopId,
+          name,
+          sku: sku.trim() || undefined,
+          barcode: barcode.trim() || undefined,
+          categoryId: categoryId || firstActiveCat?.id || shopCategories[0]?.id || allCategories[0]?.id || 'cat-hardware',
+          purchasePrice: costPrice,
+          sellingPrice: price,
+          currentStock: parseInt(currentStock, 10) || 0,
+          minStock: parseInt(minStock, 10) || 5,
+          unit,
+          images: productImages,
+        },
+        currentUser
+      );
 
-    if (result.success) {
-      addToast({
-        type: 'success',
-        title: 'Product Added',
-        description: `'${name}' has been added to catalog and saved locally.`,
-      });
-      setShowAddModal(false);
-      // Reset form
-      setName('');
-      setSku('');
-      setBarcode('');
-      setPurchasePrice('');
-      setSellingPrice('');
-      setCurrentStock('0');
-      setMinStock('5');
-      setProductImages([]);
-    } else {
-      setFormError(result.error || 'Failed to create product.');
+      if (result.success) {
+        addToast({
+          type: 'success',
+          title: 'Product Added',
+          description: `'${name}' has been added to catalog and saved locally.`,
+        });
+        setShowAddModal(false);
+        // Reset form
+        setName('');
+        setSku('');
+        setBarcode('');
+        setPurchasePrice('');
+        setSellingPrice('');
+        setCurrentStock('0');
+        setMinStock('5');
+        setProductImages([]);
+      } else {
+        setFormError(result.error || 'Failed to create product.');
+      }
+    } catch (error: any) {
+      setFormError(error.message || 'An error occurred while saving product.');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -428,39 +441,29 @@ export const SellerProducts: React.FC = () => {
               <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
                 <div>
                   <label className="block text-slate-300 font-medium mb-1">Purchase Price</label>
-                  <div className="relative">
-                    <span className="absolute left-2.5 top-2 text-slate-500 font-mono">
-                      {settings.currencySymbol}
-                    </span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={purchasePrice}
-                      onChange={e => setPurchasePrice(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-6 pr-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                  </div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={purchasePrice}
+                    onChange={e => setPurchasePrice(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
                 </div>
 
                 <div>
                   <label className="block text-slate-300 font-medium mb-1">Selling Price *</label>
-                  <div className="relative">
-                    <span className="absolute left-2.5 top-2 text-slate-500 font-mono">
-                      {settings.currencySymbol}
-                    </span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      required
-                      value={sellingPrice}
-                      onChange={e => setSellingPrice(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-6 pr-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                  </div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    value={sellingPrice}
+                    onChange={e => setSellingPrice(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
                 </div>
               </div>
 
@@ -488,7 +491,7 @@ export const SellerProducts: React.FC = () => {
                 </div>
               </div>
 
-              {/* Product Images (Optional - up to 3 images) with Camera support */}
+              {/* Product Images */}
               <div className="pt-2 border-t border-slate-800/80">
                 <ProductImageUpload
                   images={productImages}
@@ -506,9 +509,10 @@ export const SellerProducts: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition active:scale-95"
+                  disabled={isSaving}
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition active:scale-95 disabled:opacity-50"
                 >
-                  Save Product
+                  {isSaving ? 'Saving...' : 'Save Product'}
                 </button>
               </div>
             </form>
