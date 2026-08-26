@@ -1,0 +1,8 @@
+{
+  "name": "Diocres Hardware & Retail Solutions",
+  "description": "Offline-first Mobile & Desktop point of sale, inventory tracking, multi-shop management, seller portals, debts, expenses, purchases, and reporting system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
