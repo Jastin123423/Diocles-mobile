@@ -1,5 +1,6 @@
 import { db } from '../db/storage';
 import { DebtRecord, DebtSummary, DebtType, DebtStatus, DebtPayment, User } from '../types';
+import { generateUUID } from '../utils/crypto';
 
 export class DebtService {
   /**
@@ -12,7 +13,6 @@ export class DebtService {
 
   /**
    * Calculate effective status of a debt based on current local date & remaining balance
-   * Paid, Cancelled, and Archived states are preserved.
    */
   public static calculateStatus(debt: DebtRecord, todayStr: string = this.getTodayStr()): DebtStatus {
     if (debt.status === 'PAID') return 'PAID';
@@ -27,7 +27,6 @@ export class DebtService {
     }
 
     if (paidAmt > 0) {
-      // Partially paid debt, check if remaining portion is overdue or due today
       if (debt.dueDate) {
         const due = debt.dueDate.slice(0, 10);
         if (due < todayStr) return 'OVERDUE';
@@ -63,10 +62,17 @@ export class DebtService {
   }
 
   /**
-   * Get all debts with dynamically computed current statuses and remaining amounts
+   * Get all debts with user filtering
+   * Admin sees all, Seller sees only their own
    */
-  public static getAllDebts(): DebtRecord[] {
-    const rawDebts = db.getDebts();
+  public static getAllDebts(currentUser?: User): DebtRecord[] {
+    let rawDebts = db.getDebts();
+    
+    // Filter: Admin sees all, Sellers see only their own
+    if (currentUser && currentUser.role === 'SELLER') {
+      rawDebts = rawDebts.filter(d => d.createdByUserId === currentUser.id);
+    }
+    
     const todayStr = this.getTodayStr();
 
     return rawDebts.map(d => {
@@ -84,11 +90,10 @@ export class DebtService {
   }
 
   /**
-   * Get Debt Dashboard Summary Metrics (Tunadai & Wanatudai)
-   * Strictly independent from main accounting/sales/products.
+   * Get Debt Dashboard Summary Metrics with user filtering
    */
-  public static getSummary(): DebtSummary {
-    const debts = this.getAllDebts();
+  public static getSummary(currentUser?: User): DebtSummary {
+    const debts = this.getAllDebts(currentUser);
 
     const summary: DebtSummary = {
       weDemand: {
@@ -198,12 +203,23 @@ export class DebtService {
     };
 
     db.addDebt(record);
+
+    // Enqueue sync for cloud
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'CREATE_DEBT',
+      entityType: 'DEBT',
+      entityId: record.id,
+      payload: record,
+      status: 'PENDING',
+      createdAt: now,
+    });
+
     return record;
   }
 
   /**
-   * Record a partial or full payment on a debt.
-   * Updates paidAmount, remainingAmount, status ('PARTIALLY_PAID' or 'PAID'), and logs the payment history installment.
+   * Record a partial or full payment on a debt with ownership check
    */
   public static recordPayment(
     debtId: string,
@@ -219,6 +235,11 @@ export class DebtService {
     const existing = rawDebts.find(d => d.id === debtId);
     if (!existing) {
       return { success: false, error: 'Rekodi ya deni haijapatikana / Debt not found' };
+    }
+
+    // Ownership check: Seller can only pay their own debts
+    if (user.role === 'SELLER' && existing.createdByUserId !== user.id) {
+      return { success: false, error: 'Unaweza kusimamia madeni yako tu / You can only manage your own debts.' };
     }
 
     if (paymentAmount <= 0) {
@@ -278,11 +299,23 @@ export class DebtService {
     db.updateDebt(debtId, patch);
 
     const updated = { ...existing, ...patch };
+
+    // Enqueue sync for cloud
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'UPDATE_DEBT',
+      entityType: 'DEBT',
+      entityId: debtId,
+      payload: updated,
+      status: 'PENDING',
+      createdAt: now,
+    });
+
     return { success: true, debt: updated };
   }
 
   /**
-   * Mark a debt as fully Paid
+   * Mark a debt as fully Paid with ownership check
    */
   public static markAsPaid(
     debtId: string,
@@ -293,6 +326,11 @@ export class DebtService {
     const rawDebts = db.getDebts();
     const existing = rawDebts.find(d => d.id === debtId);
     if (!existing) return false;
+
+    // Ownership check
+    if (user.role === 'SELLER' && existing.createdByUserId !== user.id) {
+      return false;
+    }
 
     const currentPaid = existing.paidAmount || 0;
     const currentRemaining = existing.remainingAmount !== undefined ? existing.remainingAmount : Math.max(0, existing.amount - currentPaid);
@@ -307,14 +345,18 @@ export class DebtService {
   }
 
   /**
-   * Update an existing debt record
+   * Update an existing debt record with ownership check
    */
-  public static updateDebt(debtId: string, patch: Partial<DebtRecord>): boolean {
+  public static updateDebt(debtId: string, patch: Partial<DebtRecord>, currentUser?: User): boolean {
     const rawDebts = db.getDebts();
     const existing = rawDebts.find(d => d.id === debtId);
     if (!existing) return false;
 
-    // Recalculate remaining amount if amount is updated
+    // Ownership check
+    if (currentUser && currentUser.role === 'SELLER' && existing.createdByUserId !== currentUser.id) {
+      return false;
+    }
+
     if (patch.amount !== undefined) {
       const paid = patch.paidAmount !== undefined ? patch.paidAmount : (existing.paidAmount || 0);
       patch.remainingAmount = Math.max(0, patch.amount - paid);
@@ -325,13 +367,34 @@ export class DebtService {
 
     patch.updatedAt = new Date().toISOString();
     db.updateDebt(debtId, patch);
+
+    const updated = { ...existing, ...patch };
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'UPDATE_DEBT',
+      entityType: 'DEBT',
+      entityId: debtId,
+      payload: updated,
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+
     return true;
   }
 
   /**
-   * Delete or archive a debt record
+   * Delete or archive a debt record with ownership check
    */
-  public static deleteDebt(debtId: string): boolean {
+  public static deleteDebt(debtId: string, currentUser?: User): boolean {
+    const rawDebts = db.getDebts();
+    const existing = rawDebts.find(d => d.id === debtId);
+    if (!existing) return false;
+
+    // Ownership check
+    if (currentUser && currentUser.role === 'SELLER' && existing.createdByUserId !== currentUser.id) {
+      return false;
+    }
+
     db.deleteDebt(debtId);
     return true;
   }
