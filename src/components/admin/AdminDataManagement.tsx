@@ -243,7 +243,7 @@ export const AdminDataManagement: React.FC = () => {
     }
   };
 
-  // Simulate Cloud Sync
+  // Sync with Cloud
   const handleSimulateSync = async () => {
     setIsSyncing(true);
     const result = await SyncService.processSyncQueue(currentUser);
@@ -253,7 +253,7 @@ export const AdminDataManagement: React.FC = () => {
       addToast({
         type: 'success',
         title: 'Sync Successful',
-        description: `Synchronized ${result.processedCount} local transactions with cloud endpoint queue.`,
+        description: result.message || `Synchronized ${result.processedCount} records with cloud.`,
       });
     }
   };
@@ -960,7 +960,7 @@ export const AdminDataManagement: React.FC = () => {
               className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>Simulate Cloud Sync</span>
+              <span>Sync with Cloud</span>
             </button>
           </div>
 
