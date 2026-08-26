@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.diocres.hardwaresolutions',
-  appName: 'Diocres Hardware POS',
+  appName: 'Diocres POS',
   webDir: 'dist',
   server: {
     androidScheme: 'https'
