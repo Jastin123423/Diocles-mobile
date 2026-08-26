@@ -8,9 +8,10 @@ export interface User {
   name: string;
   role: UserRole;
   passwordHash: string;
-  color: string; // Hex or theme color key
+  color: string;
   status: UserStatus;
-  assignedShopIds?: string[]; // Multiple shop IDs assigned to this user
+  assignedShopIds?: string[];
+  avatarUrl?: string; // ADDED: Profile picture URL
   createdAt: string;
   updatedAt: string;
 }
@@ -32,7 +33,7 @@ export interface Shop {
 
 export interface Category {
   id: string;
-  shopId: string; // Specific shop this category belongs to
+  shopId: string;
   name: string;
   icon?: string;
   color?: string;
@@ -46,16 +47,16 @@ export type ProductStatus = 'ACTIVE' | 'INACTIVE';
 export interface ProductImage {
   imageId: string;
   productId?: string;
-  imageOrder: number; // 0, 1, 2 (0 = Main Image)
-  version: number; // Version number for delta-sync (starts at 1)
-  dataUrl: string; // Full compressed base64 data for gallery viewer
-  thumbnailUrl?: string; // Ultra-compact thumbnail base64 for fast lists
+  imageOrder: number;
+  version: number;
+  dataUrl: string;
+  thumbnailUrl?: string;
   filename?: string;
   mimeType: string;
   fileSize: number;
   width?: number;
   height?: number;
-  hash?: string; // Stable Checksum / Hash for comparing local vs server version
+  hash?: string;
   syncStatus?: 'LOCAL_ONLY' | 'SYNCED' | 'MODIFIED_LOCALLY';
   createdAt: string;
   updatedAt: string;
@@ -63,20 +64,20 @@ export interface ProductImage {
 
 export interface Product {
   id: string;
-  shopId: string; // Stable Shop ID
+  shopId: string;
   name: string;
   sku: string;
   barcode: string;
   categoryId: string;
   sellingPrice: number;
-  proposedSellingPrice?: number; // Proposed price alias
-  purchasePrice: number; // Cost of goods
+  proposedSellingPrice?: number;
+  purchasePrice: number;
   currentStock: number;
   minStock: number;
-  unit: string; // e.g., 'pcs', 'kg', 'box', 'pack', 'liter'
+  unit: string;
   status: ProductStatus;
-  imageUrl?: string; // Main image URL/dataUrl (for backward compatibility)
-  images?: ProductImage[]; // Optional array of up to 3 ProductImages
+  imageUrl?: string;
+  images?: ProductImage[];
   createdAt: string;
   updatedAt: string;
 }
@@ -133,12 +134,12 @@ export interface InventoryMovement {
   productId: string;
   productName: string;
   previousQty: number;
-  changeQty: number; // positive or negative
+  changeQty: number;
   newQty: number;
   type: MovementType;
   reason: string;
-  costValue?: number; // Financial cost/loss value calculated based on purchase price
-  referenceId?: string; // sale ID or purchase ID
+  costValue?: number;
+  referenceId?: string;
   userId: string;
   userName: string;
   createdAt: string;
@@ -186,7 +187,7 @@ export type ExpenseCategory =
 
 export interface Expense {
   id: string;
-  shopId?: string | null; // null/undefined for General Company Expense
+  shopId?: string | null;
   shopName?: string;
   isCompanyExpense?: boolean;
   category: ExpenseCategory | string;
@@ -248,7 +249,9 @@ export type SyncOperation =
   | 'UPDATE_SETTINGS'
   | 'CREATE_SHOP'
   | 'UPDATE_SHOP'
-  | 'TOGGLE_SHOP_STATUS';
+  | 'TOGGLE_SHOP_STATUS'
+  | 'CREATE_DEBT'
+  | 'UPDATE_DEBT';
 
 export interface SyncQueueItem {
   id: string;
@@ -298,9 +301,9 @@ export interface ImportHistoryItem {
 }
 
 // ==========================================
-// 1. DEBT MANAGEMENT (INDEPENDENT DOMAIN)
+// DEBT MANAGEMENT
 // ==========================================
-export type DebtType = 'WE_DEMAND' | 'THEY_DEMAND'; // 'Tunadai' vs 'Wanatudai'
+export type DebtType = 'WE_DEMAND' | 'THEY_DEMAND';
 
 export type DebtStatus = 'PENDING' | 'DUE_TODAY' | 'OVERDUE' | 'PARTIALLY_PAID' | 'PAID' | 'CANCELLED' | 'ARCHIVED';
 
@@ -319,16 +322,16 @@ export interface DebtPayment {
 
 export interface DebtRecord {
   id: string;
-  type: DebtType; // 'WE_DEMAND' (Tunadai - People who owe us) | 'THEY_DEMAND' (Wanatudai - People we owe)
-  debtorName: string; // Required (Customer/Person or Supplier/Entity)
-  productDescription?: string; // Manually typed plain text ONLY (e.g., "Daftari", "Simenti") - NO link to Products
-  amount: number; // Required, Original Total Debt in TSh
-  paidAmount?: number; // Total amount paid so far
-  remainingAmount?: number; // amount - (paidAmount || 0)
-  payments?: DebtPayment[]; // Detailed installment payment history
-  dueDate?: string; // Optional payment date (YYYY-MM-DD)
-  contact?: string; // Optional phone/contact info
-  notes?: string; // Optional notes
+  type: DebtType;
+  debtorName: string;
+  productDescription?: string;
+  amount: number;
+  paidAmount?: number;
+  remainingAmount?: number;
+  payments?: DebtPayment[];
+  dueDate?: string;
+  contact?: string;
+  notes?: string;
   status: DebtStatus;
   paidAt?: string;
   paidByUserId?: string;
@@ -336,7 +339,7 @@ export interface DebtRecord {
   paymentNotes?: string;
   createdByUserId: string;
   createdByName: string;
-  shopId?: string; // Optional context tag
+  shopId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -365,21 +368,21 @@ export interface DebtSummary {
 }
 
 // ==========================================
-// 2. NOTIFICATION CENTER (INDEPENDENT DOMAIN)
+// NOTIFICATION CENTER
 // ==========================================
 export type NotificationCategory = 'CRITICAL' | 'WARNING' | 'INFO' | 'SUCCESS';
 
 export type NotificationType =
-  | 'DEBT_UPCOMING_CUSTOMER' // Kesho ni siku ya [Name] kulipa deni la [Desc] Sh [Amount]
-  | 'DEBT_UPCOMING_COMPANY'  // Kesho ni siku ya kulipa [Name] pesa ya [Desc] Sh [Amount]
-  | 'DEBT_OVERDUE_CUSTOMER'   // [Name] kachelewa kulipa Sh [Amount] ya [Desc]. Zimepita siku [X]
-  | 'DEBT_OVERDUE_COMPANY'    // Malipo ya [Desc] kwa [Name] yamechelewa. Zimepita siku [X]
-  | 'STOCK_LOW'               // [Product] zimekaribia kuisha — zimebaki [Qty] (Shop-specific)
-  | 'STOCK_LOW_ADMIN'         // Low stock alert for admin
-  | 'STOCK_OUT'               // [Product] zimeisha kabisa (Shop-specific)
-  | 'STOCK_OUT_ADMIN'         // Out of stock alert for admin
-  | 'PRICE_CHANGE_SELLER'     // [Product] zimebadilishwa bei sasa zitauzwa Sh [Price] (Shop-specific)
-  | 'PRICE_CHANGE_ADMIN'      // Taarifa imetumwa kwa wauzaji wa [Shop] juu ya mabadiliko ya bei ya [Product]
+  | 'DEBT_UPCOMING_CUSTOMER'
+  | 'DEBT_UPCOMING_COMPANY'
+  | 'DEBT_OVERDUE_CUSTOMER'
+  | 'DEBT_OVERDUE_COMPANY'
+  | 'STOCK_LOW'
+  | 'STOCK_LOW_ADMIN'
+  | 'STOCK_OUT'
+  | 'STOCK_OUT_ADMIN'
+  | 'PRICE_CHANGE_SELLER'
+  | 'PRICE_CHANGE_ADMIN'
   | 'LOSS_OCCURRED'
   | 'SYSTEM_EVENT';
 
@@ -389,14 +392,13 @@ export interface AppNotification {
   category: NotificationCategory;
   title: string;
   message: string;
-  isGlobal: boolean; // True for debt reminders (Admin + All sellers)
-  targetShopId?: string; // For shop-specific notifications
+  isGlobal: boolean;
+  targetShopId?: string;
   targetShopName?: string;
   targetUserIds?: string[];
   targetRole?: 'ADMIN' | 'SELLER' | 'ALL';
   relatedEntityId?: string;
   relatedEntityType?: 'DEBT' | 'PRODUCT' | 'SHOP' | 'SALE';
   createdAt: string;
-  readByUserIds: string[]; // List of user IDs who marked this notification as read
+  readByUserIds: string[];
 }
-
