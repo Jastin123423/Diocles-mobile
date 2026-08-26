@@ -1,0 +1,66 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="blueD" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18C8FF"/>
+      <stop offset="45%" stop-color="#087FFF"/>
+      <stop offset="100%" stop-color="#0047E8"/>
+    </linearGradient>
+
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0A0D14"/>
+      <stop offset="100%" stop-color="#02040A"/>
+    </linearGradient>
+
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Dark rounded background -->
+  <rect
+    x="12"
+    y="12"
+    width="1000"
+    height="1000"
+    rx="145"
+    fill="url(#bg)"
+    stroke="#182236"
+    stroke-width="6"
+  />
+
+  <!-- Blue D -->
+  <path
+    d="M270 220
+       H520
+       C705 220 830 330 830 512
+       C830 694 705 804 520 804
+       H270
+       V220
+       Z
+
+       M395 340
+       V684
+       H505
+       C625 684 700 620 700 512
+       C700 404 625 340 505 340
+       H395
+       Z"
+    fill="url(#blueD)"
+    fill-rule="evenodd"
+    filter="url(#glow)"
+  />
+
+  <!-- Subtle highlight -->
+  <path
+    d="M270 220 H520
+       C705 220 830 330 830 512"
+    fill="none"
+    stroke="#35D5FF"
+    stroke-width="5"
+    opacity="0.7"
+  />
+</svg>

@@ -73,8 +73,8 @@ export const LoginView: React.FC = () => {
         <div className="max-w-md w-full">
           {/* Brand Header */}
           <div className="text-center mb-6 sm:mb-8">
-            <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center mx-auto mb-3 sm:mb-4 shadow-xl shadow-blue-500/10 border border-blue-400/30">
-              <Boxes className="w-8 h-8 sm:w-9 sm:h-9 text-white" />
+            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl overflow-hidden flex items-center justify-center mx-auto mb-3 sm:mb-4 shadow-xl shadow-blue-500/20 border border-blue-400/30 bg-slate-950 p-0.5">
+              <img src="/icon.svg" alt="Diocres Logo" className="w-full h-full object-contain rounded-xl" />
             </div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">{settings.businessName}</h1>
             <p className="text-xs sm:text-sm text-slate-400 mt-1">{settings.tagline}</p>
