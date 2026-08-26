@@ -68,12 +68,14 @@ export class SellerService {
       color: params.color || 'blue',
       status: params.status || 'ACTIVE',
       assignedShopIds: params.assignedShopIds && params.assignedShopIds.length > 0 ? params.assignedShopIds : [],
+      avatarUrl: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     db.saveUsers([...users, newSeller]);
 
+    // Sync payload includes passwordHash and avatarUrl for cloud
     db.enqueueSync({
       id: generateUUID(),
       operation: 'CREATE_SELLER',
@@ -83,9 +85,14 @@ export class SellerService {
         id: newSeller.id,
         username: newSeller.username,
         name: newSeller.name,
+        role: newSeller.role,
+        passwordHash: newSeller.passwordHash,
         color: newSeller.color,
         status: newSeller.status,
         assignedShopIds: newSeller.assignedShopIds,
+        avatarUrl: newSeller.avatarUrl || null,
+        createdAt: newSeller.createdAt,
+        updatedAt: newSeller.updatedAt,
       },
       status: 'PENDING',
       createdAt: new Date().toISOString(),
@@ -151,6 +158,7 @@ export class SellerService {
     users[index] = seller;
     db.saveUsers(users);
 
+    // Sync payload includes passwordHash and avatarUrl to preserve them
     db.enqueueSync({
       id: generateUUID(),
       operation: 'UPDATE_SELLER',
@@ -158,10 +166,16 @@ export class SellerService {
       entityId: seller.id,
       payload: {
         id: seller.id,
+        username: seller.username,
         name: seller.name,
+        role: seller.role,
+        passwordHash: seller.passwordHash,
         color: seller.color,
         status: seller.status,
         assignedShopIds: seller.assignedShopIds,
+        avatarUrl: seller.avatarUrl || null,
+        createdAt: seller.createdAt,
+        updatedAt: seller.updatedAt,
       },
       status: 'PENDING',
       createdAt: new Date().toISOString(),
@@ -208,6 +222,29 @@ export class SellerService {
     user.color = color;
     user.updatedAt = new Date().toISOString();
     db.saveUsers(users);
+
+    // Sync color update to cloud (includes avatarUrl to preserve it)
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'UPDATE_SELLER',
+      entityType: 'SELLER',
+      entityId: user.id,
+      payload: {
+        id: user.id,
+        username: user.username,
+        name: user.name,
+        role: user.role,
+        passwordHash: user.passwordHash,
+        color: user.color,
+        status: user.status,
+        assignedShopIds: user.assignedShopIds,
+        avatarUrl: user.avatarUrl || null,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
 
     return { success: true };
   }
