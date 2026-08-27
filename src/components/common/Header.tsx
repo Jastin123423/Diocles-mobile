@@ -89,16 +89,26 @@ export const Header: React.FC<HeaderProps> = ({ onOpenDrawer }) => {
             </button>
           )}
 
-          <div
-            className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center font-bold text-white shadow-sm shrink-0 transition-colors"
-            style={{ backgroundColor: currentUser?.role === 'ADMIN' ? '#334155' : sellerColor.primary }}
-          >
-            {currentUser?.role === 'ADMIN' ? (
-              <Shield className="w-4 h-4 sm:w-5 sm:h-5" />
-            ) : (
-              currentUser?.name.charAt(0).toUpperCase() || 'S'
-            )}
-          </div>
+          {/* Avatar with fallback */}
+          {currentUser?.avatarUrl ? (
+            <img 
+              src={currentUser.avatarUrl} 
+              alt={currentUser.name} 
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg object-cover shadow-sm shrink-0"
+              style={{ border: `2px solid ${currentUser.role === 'ADMIN' ? '#334155' : sellerColor.primary}` }}
+            />
+          ) : (
+            <div
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center font-bold text-white shadow-sm shrink-0 transition-colors"
+              style={{ backgroundColor: currentUser?.role === 'ADMIN' ? '#334155' : sellerColor.primary }}
+            >
+              {currentUser?.role === 'ADMIN' ? (
+                <Shield className="w-4 h-4 sm:w-5 sm:h-5" />
+              ) : (
+                currentUser?.name.charAt(0).toUpperCase() || 'S'
+              )}
+            </div>
+          )}
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <h1 className="font-semibold text-xs sm:text-sm text-white tracking-tight truncate">
@@ -291,7 +301,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenDrawer }) => {
           <button
             id="sync-status-button"
             onClick={triggerSync}
-            title="Click to simulate synchronization with server"
+            title="Click to sync with server"
             className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-800 text-xs font-medium border border-slate-700 transition"
           >
             {syncStatus.state === 'SYNCING' ? (
@@ -317,7 +327,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenDrawer }) => {
             )}
           </button>
 
-          {/* Logout Button (Icon only on mobile, full text on desktop) */}
+          {/* Logout Button */}
           <button
             id="logout-button"
             onClick={logout}
