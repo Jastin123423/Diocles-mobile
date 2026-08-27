@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Users,
   UserPlus,
@@ -13,16 +13,20 @@ import {
   CheckCircle2,
   Lock,
   Store,
+  Camera,
+  Upload,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { SellerService } from '../../services/sellerService';
 import { AuthService } from '../../services/authService';
+import { StorageService } from '../../db/storage';
+import { CloudflareApi } from '../../services/cloudflareApi';
 import { User } from '../../types';
 import { SELLER_COLORS, getSellerColorById } from '../../utils/colors';
-import { formatDateTime } from '../../utils/formatters';
+import { formatCurrency, formatDateTime } from '../../utils/formatters';
 
 export const AdminSellers: React.FC = () => {
-  const { currentUser, dbState, addToast } = useApp();
+  const { currentUser, dbState, addToast, refreshUser } = useApp();
 
   // Modals
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -42,17 +46,114 @@ export const AdminSellers: React.FC = () => {
   const [newAdminSetPass, setNewAdminSetPass] = useState('');
   const [passError, setPassError] = useState('');
 
+  // Avatar upload state
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [uploadingSellerId, setUploadingSellerId] = useState<string | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+
   if (!currentUser || currentUser.role !== 'ADMIN') return null;
 
   const sellers = dbState.users.filter(u => u.role === 'SELLER');
   const allShops = dbState.shops || [];
+
+  // Helper to compress image
+  const compressImage = (file: File, maxWidth: number, maxHeight: number): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          if (width > maxWidth) {
+            height = (maxWidth / width) * height;
+            width = maxWidth;
+          }
+          if (height > maxHeight) {
+            width = (maxHeight / height) * width;
+            height = maxHeight;
+          }
+          
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('Failed to compress image'));
+          }, 'image/jpeg', 0.8);
+        };
+        img.onerror = reject;
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleAvatarUpload = async (sellerId: string, file: File) => {
+    if (!file) return;
+
+    setUploadingSellerId(sellerId);
+    setIsUploadingAvatar(true);
+    
+    try {
+      const compressed = await compressImage(file, 200, 200);
+      const result = await CloudflareApi.uploadImage(compressed, 'seller', sellerId);
+      
+      if (result.success) {
+        const users = StorageService.getUsers();
+        const userIndex = users.findIndex(u => u.id === sellerId);
+        if (userIndex !== -1) {
+          users[userIndex].avatarUrl = result.url;
+          StorageService.saveUsers(users);
+          if (refreshUser) refreshUser();
+        }
+        
+        addToast({
+          type: 'success',
+          title: 'Profile Picture Updated',
+          description: 'Seller profile picture has been updated successfully.',
+        });
+      }
+    } catch (error: any) {
+      addToast({
+        type: 'error',
+        title: 'Upload Failed',
+        description: error.message || 'Could not upload profile picture.',
+      });
+    } finally {
+      setIsUploadingAvatar(false);
+      setUploadingSellerId(null);
+      if (avatarInputRef.current) {
+        avatarInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleAvatarClick = (sellerId: string) => {
+    if (avatarInputRef.current) {
+      avatarInputRef.current.click();
+      avatarInputRef.current.dataset.sellerId = sellerId;
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const sellerId = e.target.dataset.sellerId;
+    if (file && sellerId) {
+      handleAvatarUpload(sellerId, file);
+    }
+  };
 
   const openAddModal = () => {
     setName('');
     setUsername('');
     setPassword('');
     setSelectedColor('blue');
-    // Default assign all active shops or first active shop
     const activeShopIds = allShops.filter(s => s.status === 'ACTIVE').map(s => s.id);
     setAssignedShopIds(activeShopIds.length > 0 ? [activeShopIds[0]] : []);
     setFormError('');
@@ -191,6 +292,15 @@ export const AdminSellers: React.FC = () => {
 
   return (
     <div id="admin-sellers-view" className="flex-1 p-3.5 sm:p-6 bg-slate-950 text-slate-100 overflow-y-auto space-y-4 sm:space-y-6">
+      {/* Hidden file input for avatar uploads */}
+      <input
+        ref={avatarInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFileChange}
+        className="hidden"
+      />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-3.5 sm:pb-4 border-b border-slate-800">
         <div>
@@ -210,7 +320,7 @@ export const AdminSellers: React.FC = () => {
         </button>
       </div>
 
-      {/* Strict Data Integrity Notice */}
+      {/* Data Integrity Notice */}
       <div className="p-3.5 sm:p-4 bg-slate-900 border border-slate-800 rounded-xl flex items-start gap-3">
         <Shield className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400 shrink-0 mt-0.5" />
         <div className="text-[11px] sm:text-xs text-slate-300">
@@ -223,11 +333,7 @@ export const AdminSellers: React.FC = () => {
         {sellers.map(seller => {
           const colorObj = getSellerColorById(seller.color || 'blue');
           const isActive = seller.status === 'ACTIVE';
-
-          // Resolve assigned shop names
           const sellerShops = allShops.filter(sh => (seller.assignedShopIds || []).includes(sh.id));
-
-          // Sales count for this seller
           const sellerSales = dbState.sales.filter(s => s.sellerId === seller.id);
           const totalSalesVolume = sellerSales.reduce(
             (sum, s) => (s.status === 'COMPLETED' ? sum + s.total : sum),
@@ -244,12 +350,37 @@ export const AdminSellers: React.FC = () => {
               <div>
                 <div className="flex items-start justify-between gap-3 mb-3">
                   <div className="flex items-center gap-3">
-                    <div
-                      className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg text-white shadow shrink-0"
-                      style={{ backgroundColor: colorObj.primary }}
-                    >
-                      {seller.name.charAt(0).toUpperCase()}
+                    {/* Avatar with upload button */}
+                    <div className="relative group shrink-0">
+                      {seller.avatarUrl ? (
+                        <img 
+                          src={seller.avatarUrl} 
+                          alt={seller.name} 
+                          className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl object-cover shadow"
+                        />
+                      ) : (
+                        <div
+                          className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg text-white shadow"
+                          style={{ backgroundColor: colorObj.primary }}
+                        >
+                          {seller.name.charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      
+                      <button
+                        onClick={() => handleAvatarClick(seller.id)}
+                        disabled={isUploadingAvatar && uploadingSellerId === seller.id}
+                        className="absolute inset-0 flex items-center justify-center rounded-xl bg-slate-950/60 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50"
+                        title="Upload profile picture"
+                      >
+                        {isUploadingAvatar && uploadingSellerId === seller.id ? (
+                          <Upload className="w-4 h-4 text-white animate-pulse" />
+                        ) : (
+                          <Camera className="w-4 h-4 text-white" />
+                        )}
+                      </button>
                     </div>
+                    
                     <div>
                       <h3 className="font-bold text-white text-xs sm:text-sm">{seller.name}</h3>
                       <p className="text-[11px] sm:text-xs text-slate-400 font-mono">@{seller.username}</p>
@@ -297,17 +428,14 @@ export const AdminSellers: React.FC = () => {
                   <div className="flex justify-between text-slate-400">
                     <span>Color</span>
                     <span className="font-semibold text-white flex items-center gap-1.5">
-                      <span
-                        className="w-2.5 h-2.5 rounded-full inline-block"
-                        style={{ backgroundColor: colorObj.primary }}
-                      ></span>
+                      <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: colorObj.primary }}></span>
                       {colorObj.name}
                     </span>
                   </div>
                   <div className="flex justify-between text-slate-400">
                     <span>Lifetime Sales</span>
                     <span className="font-mono text-emerald-400 font-semibold">
-                      ${totalSalesVolume.toFixed(2)} ({sellerSales.length})
+                      {formatCurrency(totalSalesVolume, dbState.settings?.currencySymbol || 'TSh')} ({sellerSales.length})
                     </span>
                   </div>
                   <div className="flex justify-between text-slate-400">
@@ -361,58 +489,31 @@ export const AdminSellers: React.FC = () => {
                 <UserPlus className="w-5 h-5 text-blue-400" />
                 <h3 className="text-sm sm:text-base font-bold text-white">Create Seller Account</h3>
               </div>
-              <button
-                onClick={() => setIsAddModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
-              >
+              <button onClick={() => setIsAddModalOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-lg">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {formError && (
-              <div className="mb-4 p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs">
-                {formError}
-              </div>
+              <div className="mb-4 p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs">{formError}</div>
             )}
 
             <form onSubmit={handleCreateSeller} className="space-y-3.5 text-xs">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Full Name *</label>
-                <input
-                  type="text"
-                  required
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  placeholder="e.g. David Brown"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+                <input type="text" required value={name} onChange={e => setName(e.target.value)} placeholder="e.g. David Brown" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
 
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Username / Account ID *</label>
-                <input
-                  type="text"
-                  required
-                  value={username}
-                  onChange={e => setUsername(e.target.value)}
-                  placeholder="e.g. david"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+                <input type="text" required value={username} onChange={e => setUsername(e.target.value)} placeholder="e.g. david" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
 
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Initial Password *</label>
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="Set login password..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+                <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Set login password..." className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
 
-              {/* Shop Assignment Checkboxes */}
               <div>
                 <label className="block text-slate-300 font-semibold mb-1.5 flex items-center justify-between">
                   <span>Assigned Shop Units *</span>
@@ -420,20 +521,9 @@ export const AdminSellers: React.FC = () => {
                 </label>
                 <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 rounded-lg bg-slate-950 border border-slate-800">
                   {allShops.map(sh => (
-                    <label
-                      key={sh.id}
-                      className="flex items-center gap-2.5 p-1.5 rounded hover:bg-slate-900 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={assignedShopIds.includes(sh.id)}
-                        onChange={() => toggleShopSelection(sh.id)}
-                        className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500"
-                      />
-                      <span className="text-xs text-slate-200">
-                        🏪 {sh.name}
-                        {sh.status === 'INACTIVE' && <span className="text-rose-400 text-[10px] ml-1">(Inactive)</span>}
-                      </span>
+                    <label key={sh.id} className="flex items-center gap-2.5 p-1.5 rounded hover:bg-slate-900 cursor-pointer">
+                      <input type="checkbox" checked={assignedShopIds.includes(sh.id)} onChange={() => toggleShopSelection(sh.id)} className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500" />
+                      <span className="text-xs text-slate-200">🏪 {sh.name}{sh.status === 'INACTIVE' && <span className="text-rose-400 text-[10px] ml-1">(Inactive)</span>}</span>
                     </label>
                   ))}
                 </div>
@@ -443,20 +533,8 @@ export const AdminSellers: React.FC = () => {
                 <label className="block text-slate-300 font-medium mb-1.5">Signature Color Theme</label>
                 <div className="grid grid-cols-4 gap-2">
                   {SELLER_COLORS.map(c => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => setSelectedColor(c.id)}
-                      className={`p-2 rounded-lg border text-center transition flex flex-col items-center gap-1 ${
-                        selectedColor === c.id
-                          ? 'bg-slate-800 border-white text-white'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <span
-                        className="w-5 h-5 rounded-full flex items-center justify-center"
-                        style={{ backgroundColor: c.primary }}
-                      >
+                    <button key={c.id} type="button" onClick={() => setSelectedColor(c.id)} className={`p-2 rounded-lg border text-center transition flex flex-col items-center gap-1 ${selectedColor === c.id ? 'bg-slate-800 border-white text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'}`}>
+                      <span className="w-5 h-5 rounded-full flex items-center justify-center" style={{ backgroundColor: c.primary }}>
                         {selectedColor === c.id && <Check className="w-3 h-3 text-white" />}
                       </span>
                       <span className="text-[10px]">{c.name}</span>
@@ -466,19 +544,8 @@ export const AdminSellers: React.FC = () => {
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsAddModalOpen(false)}
-                  className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition"
-                >
-                  Create Account
-                </button>
+                <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
+                <button type="submit" className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition">Create Account</button>
               </div>
             </form>
           </div>
@@ -491,33 +558,19 @@ export const AdminSellers: React.FC = () => {
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
               <h3 className="text-sm sm:text-base font-bold text-white">Edit Seller @{selectedSeller.username}</h3>
-              <button
-                onClick={() => setIsEditModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setIsEditModalOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-lg"><X className="w-5 h-5" /></button>
             </div>
 
             {formError && (
-              <div className="mb-4 p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs">
-                {formError}
-              </div>
+              <div className="mb-4 p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs">{formError}</div>
             )}
 
             <form onSubmit={handleUpdateSeller} className="space-y-3.5 text-xs">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Full Name</label>
-                <input
-                  type="text"
-                  required
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+                <input type="text" required value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
 
-              {/* Shop Assignment Checkboxes */}
               <div>
                 <label className="block text-slate-300 font-semibold mb-1.5 flex items-center justify-between">
                   <span>Assigned Shop Units *</span>
@@ -525,20 +578,9 @@ export const AdminSellers: React.FC = () => {
                 </label>
                 <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 rounded-lg bg-slate-950 border border-slate-800">
                   {allShops.map(sh => (
-                    <label
-                      key={sh.id}
-                      className="flex items-center gap-2.5 p-1.5 rounded hover:bg-slate-900 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={assignedShopIds.includes(sh.id)}
-                        onChange={() => toggleShopSelection(sh.id)}
-                        className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500"
-                      />
-                      <span className="text-xs text-slate-200">
-                        🏪 {sh.name}
-                        {sh.status === 'INACTIVE' && <span className="text-rose-400 text-[10px] ml-1">(Inactive)</span>}
-                      </span>
+                    <label key={sh.id} className="flex items-center gap-2.5 p-1.5 rounded hover:bg-slate-900 cursor-pointer">
+                      <input type="checkbox" checked={assignedShopIds.includes(sh.id)} onChange={() => toggleShopSelection(sh.id)} className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500" />
+                      <span className="text-xs text-slate-200">🏪 {sh.name}{sh.status === 'INACTIVE' && <span className="text-rose-400 text-[10px] ml-1">(Inactive)</span>}</span>
                     </label>
                   ))}
                 </div>
@@ -548,20 +590,8 @@ export const AdminSellers: React.FC = () => {
                 <label className="block text-slate-300 font-medium mb-1.5">Signature Color Theme</label>
                 <div className="grid grid-cols-4 gap-2">
                   {SELLER_COLORS.map(c => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => setSelectedColor(c.id)}
-                      className={`p-2 rounded-lg border text-center transition flex flex-col items-center gap-1 ${
-                        selectedColor === c.id
-                          ? 'bg-slate-800 border-white text-white'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <span
-                        className="w-5 h-5 rounded-full flex items-center justify-center"
-                        style={{ backgroundColor: c.primary }}
-                      >
+                    <button key={c.id} type="button" onClick={() => setSelectedColor(c.id)} className={`p-2 rounded-lg border text-center transition flex flex-col items-center gap-1 ${selectedColor === c.id ? 'bg-slate-800 border-white text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'}`}>
+                      <span className="w-5 h-5 rounded-full flex items-center justify-center" style={{ backgroundColor: c.primary }}>
                         {selectedColor === c.id && <Check className="w-3 h-3 text-white" />}
                       </span>
                       <span className="text-[10px]">{c.name}</span>
@@ -571,19 +601,8 @@ export const AdminSellers: React.FC = () => {
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsEditModalOpen(false)}
-                  className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition"
-                >
-                  Save Changes
-                </button>
+                <button type="button" onClick={() => setIsEditModalOpen(false)} className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
+                <button type="submit" className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition">Save Changes</button>
               </div>
             </form>
           </div>
@@ -599,51 +618,24 @@ export const AdminSellers: React.FC = () => {
                 <KeyRound className="w-5 h-5 text-amber-400" />
                 <h3 className="text-sm sm:text-base font-bold text-white">Reset Seller Password</h3>
               </div>
-              <button
-                onClick={() => setIsPasswordModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setIsPasswordModalOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-lg"><X className="w-5 h-5" /></button>
             </div>
 
-            <p className="text-xs text-slate-400 mb-4">
-              Set a new login password for <strong>{selectedSeller.name}</strong> (@{selectedSeller.username}).
-            </p>
+            <p className="text-xs text-slate-400 mb-4">Set a new login password for <strong>{selectedSeller.name}</strong> (@{selectedSeller.username}).</p>
 
             {passError && (
-              <div className="mb-4 p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs">
-                {passError}
-              </div>
+              <div className="mb-4 p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs">{passError}</div>
             )}
 
             <form onSubmit={handleResetPassword} className="space-y-3.5 text-xs">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">New Password</label>
-                <input
-                  type="password"
-                  required
-                  value={newAdminSetPass}
-                  onChange={e => setNewAdminSetPass(e.target.value)}
-                  placeholder="Enter new password..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+                <input type="password" required value={newAdminSetPass} onChange={e => setNewAdminSetPass(e.target.value)} placeholder="Enter new password..." className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsPasswordModalOpen(false)}
-                  className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold shadow transition"
-                >
-                  Override Password
-                </button>
+                <button type="button" onClick={() => setIsPasswordModalOpen(false)} className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
+                <button type="submit" className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold shadow transition">Override Password</button>
               </div>
             </form>
           </div>
