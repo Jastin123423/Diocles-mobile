@@ -18,6 +18,7 @@ export const LoginView: React.FC = () => {
   const [activePortal, setActivePortal] = useState<UserRole>('SELLER');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -41,6 +42,13 @@ export const LoginView: React.FC = () => {
     try {
       const result = await AuthService.login(username, password, activePortal);
       if (result.success && result.user) {
+        // Save remember me preference
+        if (rememberMe) {
+          AuthService.setRememberMe(result.user);
+        } else {
+          AuthService.clearRememberMe();
+        }
+        
         login(result.user);
       } else {
         setErrorMsg(result.error || 'Authentication failed. Please verify credentials.');
@@ -164,6 +172,17 @@ export const LoginView: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {/* Remember Me Checkbox */}
+              <label className="flex items-center gap-2.5 text-xs text-slate-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={e => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span>Remember this device (auto-login next time)</span>
+              </label>
 
               <button
                 type="submit"
