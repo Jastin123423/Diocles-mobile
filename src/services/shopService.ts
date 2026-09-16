@@ -52,17 +52,24 @@ export class ShopService {
         s => s.name.toLowerCase() === normalizedName.toLowerCase()
       );
       if (existing) {
-        return { success: false, error: `A shop with the name "${normalizedName}" already exists.` };
+        return {
+          success: false,
+          error: `A shop with the name "${normalizedName}" already exists.`,
+        };
       }
 
-      const id = `shop-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
+      const id = `shop-${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .substring(2, 6)}`;
       const now = new Date().toISOString();
 
       const newShop: Shop = {
         ...shopData,
         id,
         name: normalizedName,
-        code: shopData.code ? shopData.code.trim().toUpperCase() : normalizedName.substring(0, 4).toUpperCase(),
+        code: shopData.code
+          ? shopData.code.trim().toUpperCase()
+          : normalizedName.substring(0, 4).toUpperCase(),
         status: shopData.status || 'ACTIVE',
         createdAt: now,
         updatedAt: now,
@@ -90,7 +97,9 @@ export class ShopService {
         userId: createdBy.id,
         userName: createdBy.name,
         action: 'CREATE_SHOP',
-        details: `Created shop unit "${newShop.name}" (${newShop.code || 'NO-CODE'}) with status ${newShop.status}`,
+        details: `Created shop unit "${newShop.name}" (${
+          newShop.code || 'NO-CODE'
+        }) with status ${newShop.status}`,
         entityType: 'SHOP',
         entityId: newShop.id,
         timestamp: now,
@@ -133,7 +142,10 @@ export class ShopService {
           s => s.id !== id && s.name.toLowerCase() === normalizedName.toLowerCase()
         );
         if (existing) {
-          return { success: false, error: `Another shop with the name "${normalizedName}" already exists.` };
+          return {
+            success: false,
+            error: `Another shop with the name "${normalizedName}" already exists.`,
+          };
         }
         updates.name = normalizedName;
       }
@@ -225,5 +237,75 @@ export class ShopService {
     } catch (err: any) {
       return { success: false, error: err.message || 'Failed to toggle shop status' };
     }
+  }
+
+  /**
+   * Admin deletes a shop permanently.
+   * This also removes the shop from all users' assignedShopIds,
+   * deletes all products in the shop, and deletes all categories for the shop.
+   */
+  public static deleteShop(
+    shopId: string,
+    currentUser: User
+  ): { success: boolean; error?: string } {
+    if (currentUser.role !== 'ADMIN') {
+      return { success: false, error: 'Permission Denied: Only Admin can delete shops.' };
+    }
+
+    const shops = db.getShops();
+    const shop = shops.find(s => s.id === shopId);
+
+    if (!shop) {
+      return { success: false, error: 'Shop not found.' };
+    }
+
+    // Remove shop from shops list
+    const updatedShops = shops.filter(s => s.id !== shopId);
+    db.saveShops(updatedShops);
+
+    // Remove shopId from all users' assignedShopIds
+    const users = db.getUsers();
+    const updatedUsers = users.map(u => ({
+      ...u,
+      assignedShopIds: (u.assignedShopIds || []).filter(id => id !== shopId),
+    }));
+    db.saveUsers(updatedUsers);
+
+    // Remove products in this shop
+    const products = db.getProducts();
+    const updatedProducts = products.filter(p => p.shopId !== shopId);
+    db.saveProducts(updatedProducts);
+
+    // Remove categories in this shop
+    const categories = db.getCategories?.() || [];
+    const updatedCategories = categories.filter(c => c.shopId !== shopId);
+    if (db.saveCategories) {
+      db.saveCategories(updatedCategories);
+    }
+
+    // Sync to cloud
+    db.enqueueSync({
+      id: `sync-${Date.now()}`,
+      operation: 'DELETE_SHOP',
+      entityType: 'SHOP',
+      entityId: shopId,
+      payload: { id: shopId },
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+
+    // Audit log
+    db.addAuditLog({
+      id: `audit-${Date.now()}`,
+      userId: currentUser.id,
+      userName: currentUser.name,
+      action: 'DELETE_SHOP',
+      details: `Deleted shop: ${shop.name} (${shop.code || 'NO-CODE'})`,
+      entityType: 'SHOP',
+      entityId: shopId,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { success: true };
   }
 }
