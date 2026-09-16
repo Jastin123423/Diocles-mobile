@@ -11,6 +11,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { ProductService } from '../../services/productService';
 import { formatCurrency } from '../../utils/formatters';
+import { formatPriceInput, parsePriceInput } from '../../utils/priceInput';
 import { Product, ProductImage } from '../../types';
 import { ProductThumbnail } from '../common/ProductThumbnail';
 import { ProductImageViewerModal } from '../common/ProductImageViewerModal';
@@ -22,7 +23,6 @@ export const SellerProducts: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditDeniedModal, setShowEditDeniedModal] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
 
   // New Product Form State
   const [name, setName] = useState('');
@@ -36,19 +36,21 @@ export const SellerProducts: React.FC = () => {
   const [unit, setUnit] = useState('pcs');
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
   const [formError, setFormError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
-  // Image Viewer Modal State
+  // Image Viewer
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
   const [isViewerOpen, setIsViewerOpen] = useState(false);
 
   const settings = dbState.settings;
   const categories = dbState.categories;
 
-  const targetShopId = currentShop?.id || (selectedShopId && selectedShopId !== 'ALL' ? selectedShopId : dbState.shops[0]?.id || '');
+  const targetShopId =
+    currentShop?.id ||
+    (selectedShopId && selectedShopId !== 'ALL' ? selectedShopId : dbState.shops[0]?.id || '');
   const allCategories = dbState.categories || [];
   const shopCategories = allCategories.filter(c => c.shopId === targetShopId);
 
-  // Filtered Products
   const products = ProductService.getProducts({
     shopId: targetShopId,
     categoryId: selectedCategory === 'ALL' ? undefined : selectedCategory,
@@ -67,14 +69,15 @@ export const SellerProducts: React.FC = () => {
       return;
     }
 
-    const price = parseFloat(sellingPrice);
+    // Parse formatted price strings back to numbers
+    const price = parsePriceInput(sellingPrice);
     if (isNaN(price) || price < 0) {
       setFormError('Please enter a valid selling price.');
       setIsSaving(false);
       return;
     }
 
-    const costPrice = parseFloat(purchasePrice) || 0;
+    const costPrice = parsePriceInput(purchasePrice) || 0;
 
     if (!currentUser) {
       setIsSaving(false);
@@ -90,7 +93,12 @@ export const SellerProducts: React.FC = () => {
           name,
           sku: sku.trim() || undefined,
           barcode: barcode.trim() || undefined,
-          categoryId: categoryId || firstActiveCat?.id || shopCategories[0]?.id || allCategories[0]?.id || 'cat-hardware',
+          categoryId:
+            categoryId ||
+            firstActiveCat?.id ||
+            shopCategories[0]?.id ||
+            allCategories[0]?.id ||
+            'cat-hardware',
           purchasePrice: costPrice,
           sellingPrice: price,
           currentStock: parseInt(currentStock, 10) || 0,
@@ -128,11 +136,16 @@ export const SellerProducts: React.FC = () => {
   };
 
   return (
-    <div id="seller-products-view" className="flex-1 p-3 sm:p-6 bg-slate-950 text-slate-100 overflow-y-auto">
+    <div
+      id="seller-products-view"
+      className="flex-1 p-3 sm:p-6 bg-slate-950 text-slate-100 overflow-y-auto pb-24 sm:pb-6"
+    >
       {/* Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 sm:mb-6 pb-3 sm:pb-4 border-b border-slate-800">
+      <div className="flex flex-col gap-3 mb-4 pb-4 border-b border-slate-800">
         <div>
-          <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">Product Catalog</h2>
+          <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">
+            Product Catalog
+          </h2>
           <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
             View active inventory items and add new products to store catalog
           </p>
@@ -144,7 +157,7 @@ export const SellerProducts: React.FC = () => {
             setCategoryId(shopCategories[0]?.id || '');
             setShowAddModal(true);
           }}
-          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs text-white shadow-lg transition-all active:scale-95 shrink-0"
+          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs text-white shadow-lg transition-all active:scale-95"
           style={{ backgroundColor: sellerColor.primary }}
         >
           <Plus className="w-4 h-4" />
@@ -154,33 +167,31 @@ export const SellerProducts: React.FC = () => {
 
       {/* Filter and Search Bar */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 mb-4 space-y-2.5 text-xs">
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search by product name, SKU, or barcode..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
+        <div className="relative">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search by product name, SKU, or barcode..."
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
 
-          <div className="flex items-center gap-1.5 text-xs text-slate-400">
-            <Filter className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <select
-              value={selectedCategory}
-              onChange={e => setSelectedCategory(e.target.value)}
-              className="w-full sm:w-auto bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="ALL">All Shop Categories</option>
-              {shopCategories.map(c => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="flex items-center gap-1.5 text-xs text-slate-400">
+          <Filter className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+          <select
+            value={selectedCategory}
+            onChange={e => setSelectedCategory(e.target.value)}
+            className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            <option value="ALL">All Shop Categories</option>
+            {shopCategories.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="text-[11px] text-slate-400 font-medium">
@@ -188,7 +199,7 @@ export const SellerProducts: React.FC = () => {
         </div>
       </div>
 
-      {/* Products Display: Mobile Cards & Desktop Table */}
+      {/* Products Display: Cards + Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         {products.length === 0 ? (
           <div className="py-12 text-center text-slate-500">
@@ -197,7 +208,7 @@ export const SellerProducts: React.FC = () => {
           </div>
         ) : (
           <>
-            {/* Mobile Cards View (< md) */}
+            {/* Mobile Cards (< md) */}
             <div className="md:hidden divide-y divide-slate-800/80">
               {products.map(product => {
                 const cat = categories.find(c => c.id === product.categoryId);
@@ -215,7 +226,9 @@ export const SellerProducts: React.FC = () => {
                         }}
                       />
                       <div className="flex-1 min-w-0">
-                        <h4 className="text-xs font-bold text-white truncate">{product.name}</h4>
+                        <h4 className="text-xs font-bold text-white truncate">
+                          {product.name}
+                        </h4>
                         <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-mono mt-0.5">
                           <span>SKU: {product.sku}</span>
                           {product.barcode && <span>• Barcode: {product.barcode}</span>}
@@ -248,7 +261,7 @@ export const SellerProducts: React.FC = () => {
                         <button
                           onClick={() => setShowEditDeniedModal(true)}
                           title="Editing products requires Admin permissions"
-                          className="p-1 rounded bg-slate-800 text-slate-400 hover:text-amber-300 border border-slate-700"
+                          className="p-1.5 rounded bg-slate-800 text-slate-400 hover:text-amber-300 border border-slate-700 active:bg-slate-700"
                         >
                           <Lock className="w-3.5 h-3.5" />
                         </button>
@@ -259,7 +272,7 @@ export const SellerProducts: React.FC = () => {
               })}
             </div>
 
-            {/* Desktop Table View (md+) */}
+            {/* Tablet / Desktop Table (md+) */}
             <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
@@ -339,10 +352,10 @@ export const SellerProducts: React.FC = () => {
         )}
       </div>
 
-      {/* Modal: Seller Adds Product */}
+      {/* Modal: Add Product */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-2 sm:p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-4 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 my-auto max-h-[92vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/80 backdrop-blur-sm sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-lg w-full p-4 sm:p-6 shadow-2xl max-h-[95vh] overflow-y-auto my-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
               <div className="flex items-center gap-2">
                 <Plus className="w-5 h-5 text-blue-400" />
@@ -372,7 +385,7 @@ export const SellerProducts: React.FC = () => {
                   value={name}
                   onChange={e => setName(e.target.value)}
                   placeholder="e.g. Bosch Hammer Drill 650W"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
@@ -382,7 +395,7 @@ export const SellerProducts: React.FC = () => {
                   <select
                     value={categoryId}
                     onChange={e => setCategoryId(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
                     {shopCategories
                       .filter(c => c.status !== 'INACTIVE')
@@ -395,14 +408,16 @@ export const SellerProducts: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Unit *</label>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    Unit of Measure *
+                  </label>
                   <select
                     value={unit}
                     onChange={e => setUnit(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
                     <option value="pcs">Pieces (pcs)</option>
-                    <option value="meter">Meter / Meters (m)</option>
+                    <option value="meter">Meter (m)</option>
                     <option value="pack">Pack</option>
                     <option value="box">Box</option>
                     <option value="kg">Kilogram (kg)</option>
@@ -416,103 +431,112 @@ export const SellerProducts: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">SKU (Optional)</label>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    SKU (Optional)
+                  </label>
                   <input
                     type="text"
                     value={sku}
                     onChange={e => setSku(e.target.value)}
                     placeholder="Auto if empty"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Barcode</label>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    Barcode (Optional)
+                  </label>
                   <input
                     type="text"
                     value={barcode}
                     onChange={e => setBarcode(e.target.value)}
                     placeholder="Scan or enter"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Purchase Price</label>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    Purchase Price
+                  </label>
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
                     value={purchasePrice}
-                    onChange={e => setPurchasePrice(e.target.value)}
-                    placeholder="0.00"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    onChange={e => setPurchasePrice(formatPriceInput(e.target.value))}
+                    placeholder="0"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Selling Price *</label>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    Proposed Selling Price *
+                  </label>
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
                     required
                     value={sellingPrice}
-                    onChange={e => setSellingPrice(e.target.value)}
-                    placeholder="0.00"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    onChange={e => setSellingPrice(formatPriceInput(e.target.value))}
+                    placeholder="0"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Initial Stock</label>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    Initial Stock (Defaults to 0)
+                  </label>
                   <input
                     type="number"
+                    inputMode="numeric"
                     min="0"
                     value={currentStock}
                     onChange={e => setCurrentStock(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Min Threshold</label>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    Min Threshold
+                  </label>
                   <input
                     type="number"
+                    inputMode="numeric"
                     min="0"
                     value={minStock}
                     onChange={e => setMinStock(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
               {/* Product Images */}
               <div className="pt-2 border-t border-slate-800/80">
-                <ProductImageUpload
-                  images={productImages}
-                  onChange={setProductImages}
-                />
+                <ProductImageUpload images={productImages} onChange={setProductImages} />
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition"
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition active:scale-95 disabled:opacity-50"
+                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition active:scale-95 disabled:opacity-50"
                 >
-                  {isSaving ? 'Saving...' : 'Save Product'}
+                  {isSaving ? 'Saving...' : 'Save Product to Catalog'}
                 </button>
               </div>
             </form>
@@ -520,7 +544,7 @@ export const SellerProducts: React.FC = () => {
         </div>
       )}
 
-      {/* Modal: Seller Permission Guard Notice for Editing */}
+      {/* Modal: Admin Privilege Guard */}
       {showEditDeniedModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl text-center">
@@ -529,7 +553,9 @@ export const SellerProducts: React.FC = () => {
             </div>
             <h3 className="text-base font-bold text-white mb-1">Admin Privilege Required</h3>
             <p className="text-xs text-slate-400 leading-relaxed mb-5">
-              Sellers can add new products and process sales, but only <strong>Administrators</strong> can modify prices, cost records, and existing product parameters to ensure financial audit integrity.
+              Sellers can add new products and process sales, but only{' '}
+              <strong>Administrators</strong> can modify prices, cost records, and existing product
+              parameters to ensure financial audit integrity.
             </p>
             <button
               onClick={() => setShowEditDeniedModal(false)}
@@ -541,7 +567,6 @@ export const SellerProducts: React.FC = () => {
         </div>
       )}
 
-      {/* Product Image Gallery / Viewer Modal */}
       <ProductImageViewerModal
         product={viewingProduct}
         isOpen={isViewerOpen}
