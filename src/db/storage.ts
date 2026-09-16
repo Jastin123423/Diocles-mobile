@@ -13,6 +13,7 @@ import {
   ImportHistoryItem,
   DebtRecord,
   AppNotification,
+  SaleEditRequest,
 } from '../types';
 import {
   INITIAL_USERS,
@@ -47,8 +48,8 @@ export interface DatabaseState {
   importHistory: ImportHistoryItem[];
   debts: DebtRecord[];
   notifications: AppNotification[];
+  saleEditRequests: SaleEditRequest[];
 }
-
 
 type DBListener = () => void;
 
@@ -117,6 +118,7 @@ class LocalDatabase {
     const auditLogs = this.loadTable<AuditLog[]>('audit_logs', INITIAL_AUDIT_LOGS);
     const syncQueue = this.loadTable<SyncQueueItem[]>('sync_queue', []);
     const importHistory = this.loadTable<ImportHistoryItem[]>('import_history', INITIAL_IMPORT_HISTORY);
+    const saleEditRequests = this.loadTable<SaleEditRequest[]>('sale_edit_requests', []);
 
     // Ensure users have Admin account
     if (!users || users.length === 0) {
@@ -190,6 +192,7 @@ class LocalDatabase {
       importHistory: importHistory || [],
       debts: debts || [],
       notifications: notifications || [],
+      saleEditRequests: saleEditRequests || [],
     };
 
     return this.memoryCache;
@@ -334,7 +337,7 @@ class LocalDatabase {
 
   public addAuditLog(log: AuditLog): void {
     if (!this.memoryCache) this.init();
-    const updated = [log, ...(this.memoryCache!.auditLogs || [])].slice(0, 500); // cap at 500
+    const updated = [log, ...(this.memoryCache!.auditLogs || [])].slice(0, 500);
     this.memoryCache!.auditLogs = updated;
     this.saveTable('audit_logs', updated);
     this.notify();
@@ -380,7 +383,38 @@ class LocalDatabase {
     this.notify();
   }
 
-  // --- Debts (Independent Module) ---
+  // --- Sale Edit Requests ---
+  public getSaleEditRequests(): SaleEditRequest[] {
+    return this.getState().saleEditRequests || [];
+  }
+
+  public saveSaleEditRequests(requests: SaleEditRequest[]): void {
+    if (!this.memoryCache) this.init();
+    this.memoryCache!.saleEditRequests = requests;
+    this.saveTable('sale_edit_requests', requests);
+    this.notify();
+  }
+
+  public addSaleEditRequest(request: SaleEditRequest): void {
+    if (!this.memoryCache) this.init();
+    const updated = [request, ...(this.memoryCache!.saleEditRequests || [])];
+    this.memoryCache!.saleEditRequests = updated;
+    this.saveTable('sale_edit_requests', updated);
+    this.notify();
+  }
+
+  public updateSaleEditRequest(requestId: string, patch: Partial<SaleEditRequest>): void {
+    if (!this.memoryCache) this.init();
+    const current = this.memoryCache!.saleEditRequests || [];
+    const updated = current.map(r =>
+      r.id === requestId ? { ...r, ...patch } : r
+    );
+    this.memoryCache!.saleEditRequests = updated;
+    this.saveTable('sale_edit_requests', updated);
+    this.notify();
+  }
+
+  // --- Debts ---
   public getDebts(): DebtRecord[] {
     return this.getState().debts || [];
   }
@@ -403,7 +437,9 @@ class LocalDatabase {
   public updateDebt(debtId: string, patch: Partial<DebtRecord>): void {
     if (!this.memoryCache) this.init();
     const current = this.memoryCache!.debts || [];
-    const updated = current.map(d => (d.id === debtId ? { ...d, ...patch, updatedAt: new Date().toISOString() } : d));
+    const updated = current.map(d =>
+      d.id === debtId ? { ...d, ...patch, updatedAt: new Date().toISOString() } : d
+    );
     this.memoryCache!.debts = updated;
     this.saveTable('debts', updated);
     this.notify();
@@ -418,7 +454,7 @@ class LocalDatabase {
     this.notify();
   }
 
-  // --- Notifications (Independent Center) ---
+  // --- Notifications ---
   public getNotifications(): AppNotification[] {
     return this.getState().notifications || [];
   }
@@ -433,11 +469,11 @@ class LocalDatabase {
   public addNotification(notification: AppNotification): void {
     if (!this.memoryCache) this.init();
     const current = this.memoryCache!.notifications || [];
-    // Avoid exact duplicate messages created at the same minute
     const isDup = current.some(
-      n => n.type === notification.type &&
-           n.message === notification.message &&
-           n.relatedEntityId === notification.relatedEntityId
+      n =>
+        n.type === notification.type &&
+        n.message === notification.message &&
+        n.relatedEntityId === notification.relatedEntityId
     );
     if (!isDup) {
       const updated = [notification, ...current].slice(0, 300);
@@ -516,18 +552,33 @@ class LocalDatabase {
       this.saveTable('import_history', d.importHistory || INITIAL_IMPORT_HISTORY);
       this.saveTable('debts', d.debts || INITIAL_DEBTS);
       this.saveTable('notifications', d.notifications || []);
+      this.saveTable('sale_edit_requests', d.saleEditRequests || []);
 
       this.init();
       this.notify();
-      return { success: true, message: `Successfully restored backup from ${parsed.exportedAt || 'archive'}` };
+      return {
+        success: true,
+        message: `Successfully restored backup from ${parsed.exportedAt || 'archive'}`,
+      };
     } catch (e: any) {
-      return { success: false, message: `Failed to restore database: ${e.message || 'JSON parse error'}` };
+      return {
+        success: false,
+        message: `Failed to restore database: ${e.message || 'JSON parse error'}`,
+      };
     }
   }
 
   public wipeAllData(keepShopsAndAdmin: boolean = true): void {
-    const shops = keepShopsAndAdmin ? (this.memoryCache?.shops?.length ? this.memoryCache.shops : INITIAL_SHOPS) : INITIAL_SHOPS;
-    const users = keepShopsAndAdmin ? (this.memoryCache?.users?.length ? this.memoryCache.users : INITIAL_USERS) : INITIAL_USERS;
+    const shops = keepShopsAndAdmin
+      ? this.memoryCache?.shops?.length
+        ? this.memoryCache.shops
+        : INITIAL_SHOPS
+      : INITIAL_SHOPS;
+    const users = keepShopsAndAdmin
+      ? this.memoryCache?.users?.length
+        ? this.memoryCache.users
+        : INITIAL_USERS
+      : INITIAL_USERS;
     const settings = this.memoryCache?.settings || INITIAL_SETTINGS;
 
     this.saveTable('shops', shops);
@@ -545,7 +596,8 @@ class LocalDatabase {
         userId: users[0]?.id || 'user-admin-01',
         userName: users[0]?.name || 'Administrator',
         action: 'SYSTEM_INITIALIZATION',
-        details: 'Wiped all demo and transactional data in preparation for live Cloudflare deployment',
+        details:
+          'Wiped all demo and transactional data in preparation for live Cloudflare deployment',
         entityType: 'SETTINGS',
         timestamp: new Date().toISOString(),
         createdAt: new Date().toISOString(),
@@ -555,6 +607,7 @@ class LocalDatabase {
     this.saveTable('import_history', []);
     this.saveTable('debts', []);
     this.saveTable('notifications', []);
+    this.saveTable('sale_edit_requests', []);
 
     this.init();
     this.notify();
@@ -564,7 +617,6 @@ class LocalDatabase {
     this.wipeAllData(true);
   }
 }
-
 
 export const db = new LocalDatabase();
 export const StorageService = db;
