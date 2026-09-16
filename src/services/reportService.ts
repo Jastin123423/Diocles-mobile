@@ -50,8 +50,15 @@ export class ReportService {
       currentUser = maybeUser as User;
     }
 
-    if (!currentUser || currentUser.role !== 'ADMIN') {
-      throw new Error('Permission Denied: Financial reporting is restricted to Administrators.');
+    // FIX: Allow Admin OR Seller with canViewReports permission
+    if (!currentUser) {
+      throw new Error('Permission Denied: User not found.');
+    }
+
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canViewReports) {
+      throw new Error(
+        'Permission Denied: Financial reporting is restricted to Administrators.'
+      );
     }
 
     const allSales = (db.getSales() || []).filter(s => s.status === 'COMPLETED');
@@ -70,6 +77,11 @@ export class ReportService {
 
     if (options.sellerId && options.sellerId !== 'ALL') {
       filteredSales = filteredSales.filter(s => s.sellerId === options.sellerId);
+    }
+
+    // If seller (not admin) without full access, only show their own sales
+    if (currentUser.role === 'SELLER' && !currentUser.permissions?.canViewReports) {
+      filteredSales = filteredSales.filter(s => s.sellerId === currentUser.id);
     }
 
     // Filter by date range if specified
@@ -94,7 +106,17 @@ export class ReportService {
     const netMarginPercent = totalGrossSales > 0 ? (netProfit / totalGrossSales) * 100 : 0;
 
     // Sales by Shop breakdown
-    const shopSalesBreakdown: Record<string, { id: string; name: string; salesCount: number; totalSales: number; grossProfit: number; expenseTotal: number }> = {};
+    const shopSalesBreakdown: Record<
+      string,
+      {
+        id: string;
+        name: string;
+        salesCount: number;
+        totalSales: number;
+        grossProfit: number;
+        expenseTotal: number;
+      }
+    > = {};
     shops.forEach(sh => {
       shopSalesBreakdown[sh.id] = {
         id: sh.id,
@@ -107,7 +129,7 @@ export class ReportService {
     });
 
     filteredSales.forEach(s => {
-      const shopKey = s.shopId || (shops[0]?.id || 'shop-1');
+      const shopKey = s.shopId || shops[0]?.id || 'shop-1';
       if (!shopSalesBreakdown[shopKey]) {
         const found = shops.find(x => x.id === shopKey);
         shopSalesBreakdown[shopKey] = {
@@ -120,18 +142,29 @@ export class ReportService {
         };
       }
       shopSalesBreakdown[shopKey].salesCount += 1;
-      shopSalesBreakdown[shopKey].totalSales += (s.total || 0);
-      shopSalesBreakdown[shopKey].grossProfit += (s.grossProfit || 0);
+      shopSalesBreakdown[shopKey].totalSales += s.total || 0;
+      shopSalesBreakdown[shopKey].grossProfit += s.grossProfit || 0;
     });
 
     filteredExpenses.forEach(e => {
       if (e.shopId && shopSalesBreakdown[e.shopId]) {
-        shopSalesBreakdown[e.shopId].expenseTotal += (e.amount || 0);
+        shopSalesBreakdown[e.shopId].expenseTotal += e.amount || 0;
       }
     });
 
     // Top Selling Products in filtered set
-    const productStats: Record<string, { id: string; name: string; sku: string; unitsSold: number; quantity: number; revenue: number; profit: number }> = {};
+    const productStats: Record<
+      string,
+      {
+        id: string;
+        name: string;
+        sku: string;
+        unitsSold: number;
+        quantity: number;
+        revenue: number;
+        profit: number;
+      }
+    > = {};
     filteredSales.forEach(sale => {
       (sale.items || []).forEach(item => {
         const prod = products.find(p => p.id === item.productId);
@@ -147,10 +180,10 @@ export class ReportService {
             profit: 0,
           };
         }
-        const itemProfit = (item.total || 0) - ((item.purchasePrice || 0) * (item.quantity || 1));
-        productStats[item.productId].unitsSold += (item.quantity || 1);
-        productStats[item.productId].quantity += (item.quantity || 1);
-        productStats[item.productId].revenue += (item.total || 0);
+        const itemProfit = (item.total || 0) - (item.purchasePrice || 0) * (item.quantity || 1);
+        productStats[item.productId].unitsSold += item.quantity || 1;
+        productStats[item.productId].quantity += item.quantity || 1;
+        productStats[item.productId].revenue += item.total || 0;
         productStats[item.productId].profit += itemProfit;
       });
     });
@@ -162,7 +195,10 @@ export class ReportService {
     const topProducts = topSellingProducts;
 
     // Sales by Payment Method
-    const paymentMethodBreakdown: Record<string, { method: string; count: number; total: number }> = {};
+    const paymentMethodBreakdown: Record<
+      string,
+      { method: string; count: number; total: number }
+    > = {};
     filteredSales.forEach(sale => {
       const pm = sale.paymentMethod || 'CASH';
       if (!paymentMethodBreakdown[pm]) {
@@ -173,11 +209,14 @@ export class ReportService {
         };
       }
       paymentMethodBreakdown[pm].count += 1;
-      paymentMethodBreakdown[pm].total += (sale.total || 0);
+      paymentMethodBreakdown[pm].total += sale.total || 0;
     });
 
     // Sales Performance by Cashier/Seller
-    const sellerPerformanceMap: Record<string, { id: string; name: string; count: number; total: number; profit: number }> = {};
+    const sellerPerformanceMap: Record<
+      string,
+      { id: string; name: string; count: number; total: number; profit: number }
+    > = {};
     filteredSales.forEach(sale => {
       const sId = sale.sellerId || 'unknown';
       const sName = sale.sellerName || 'Cashier';
@@ -191,22 +230,27 @@ export class ReportService {
         };
       }
       sellerPerformanceMap[sId].count += 1;
-      sellerPerformanceMap[sId].total += (sale.total || 0);
-      sellerPerformanceMap[sId].profit += (sale.grossProfit || 0);
+      sellerPerformanceMap[sId].total += sale.total || 0;
+      sellerPerformanceMap[sId].profit += sale.grossProfit || 0;
     });
 
     const sellerPerformance = Object.values(sellerPerformanceMap);
     const sellerSales = sellerPerformance;
 
     // Daily Sales Timeline (for charts)
-    const dailyMap: Record<string, { date: string; sales: number; profit: number; expenses: number }> = {};
+    const dailyMap: Record<
+      string,
+      { date: string; sales: number; profit: number; expenses: number }
+    > = {};
     filteredSales.forEach(sale => {
-      const day = sale.createdAt ? sale.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const day = sale.createdAt
+        ? sale.createdAt.slice(0, 10)
+        : new Date().toISOString().slice(0, 10);
       if (!dailyMap[day]) {
         dailyMap[day] = { date: day, sales: 0, profit: 0, expenses: 0 };
       }
-      dailyMap[day].sales += (sale.total || 0);
-      dailyMap[day].profit += (sale.grossProfit || 0);
+      dailyMap[day].sales += sale.total || 0;
+      dailyMap[day].profit += sale.grossProfit || 0;
     });
 
     filteredExpenses.forEach(exp => {
@@ -214,7 +258,7 @@ export class ReportService {
       if (!dailyMap[day]) {
         dailyMap[day] = { date: day, sales: 0, profit: 0, expenses: 0 };
       }
-      dailyMap[day].expenses += (exp.amount || 0);
+      dailyMap[day].expenses += exp.amount || 0;
     });
 
     const timeline = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
