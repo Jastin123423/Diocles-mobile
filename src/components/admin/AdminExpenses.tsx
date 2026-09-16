@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   CreditCard,
   Plus,
@@ -7,15 +7,23 @@ import {
   Search,
   PieChart,
   X,
-  AlertCircle,
   TrendingDown,
+  Edit2,
+  Trash2,
+  Tag,
+  FolderPlus,
+  Save,
+  AlertTriangle,
+  Filter,
+  ChevronDown,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ExpenseService } from '../../services/expenseService';
-import { ExpenseCategory, PaymentMethod } from '../../types';
+import { PaymentMethod, Expense } from '../../types';
 import { formatCurrency, formatDateTime } from '../../utils/formatters';
+import { formatPriceInput, parsePriceInput } from '../../utils/priceInput';
 
-const EXPENSE_CATEGORIES: { id: ExpenseCategory; label: string }[] = [
+const DEFAULT_EXPENSE_CATEGORIES: { id: string; label: string; isCustom?: boolean }[] = [
   { id: 'RENT', label: 'Store Rent & Lease' },
   { id: 'ELECTRICITY', label: 'Electricity & Utilities' },
   { id: 'SALARIES', label: 'Staff Salaries & Payroll' },
@@ -27,41 +35,168 @@ const EXPENSE_CATEGORIES: { id: ExpenseCategory; label: string }[] = [
   { id: 'OTHER', label: 'General / Miscellaneous' },
 ];
 
+const CUSTOM_CATEGORIES_KEY = 'omnibiz_custom_expense_categories';
+
+type PeriodFilter = 'today' | 'week' | 'month' | 'year' | 'custom' | 'all';
+
+interface CustomCategory {
+  id: string;
+  label: string;
+  isCustom: true;
+}
+
 export const AdminExpenses: React.FC = () => {
   const { currentUser, dbState, addToast } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
+
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [deletingExpense, setDeletingExpense] = useState<Expense | null>(null);
+  const [editingCategory, setEditingCategory] = useState<CustomCategory | null>(null);
+  const [deletingCategory, setDeletingCategory] = useState<CustomCategory | null>(null);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
 
-  // Form State
+  // Period filter
+  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('month');
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+
+  // Custom Categories
+  const [customCategories, setCustomCategories] = useState<CustomCategory[]>(() => {
+    try {
+      const stored = localStorage.getItem(CUSTOM_CATEGORIES_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [categoryError, setCategoryError] = useState('');
+
+  // Form state
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState<ExpenseCategory>('ELECTRICITY');
+  const [category, setCategory] = useState<string>('ELECTRICITY');
   const [amount, setAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
   const [reference, setReference] = useState('');
   const [notes, setNotes] = useState('');
   const [formError, setFormError] = useState('');
 
-  if (!currentUser || currentUser.role !== 'ADMIN') return null;
+  const allCategories = useMemo(() => {
+    return [...DEFAULT_EXPENSE_CATEGORIES, ...customCategories];
+  }, [customCategories]);
+
+  // Permission check
+  if (!currentUser) return null;
+  if (
+    currentUser.role !== 'ADMIN' &&
+    !currentUser.permissions?.canViewExpenses &&
+    !currentUser.permissions?.canRecordExpenses
+  )
+    return null;
+
+  const canRecordExpense = currentUser.role === 'ADMIN' || currentUser.permissions?.canRecordExpenses;
+  const isAdmin = currentUser.role === 'ADMIN';
 
   const settings = dbState.settings;
-  const expenses = ExpenseService.getExpenses(
-    {
-      category: categoryFilter === 'ALL' ? undefined : (categoryFilter as ExpenseCategory),
-      search: searchQuery,
-    },
-    currentUser
-  );
+
+  const saveCustomCategories = (cats: CustomCategory[]) => {
+    setCustomCategories(cats);
+    localStorage.setItem(CUSTOM_CATEGORIES_KEY, JSON.stringify(cats));
+  };
+
+  // Date range
+  const dateRange = useMemo(() => {
+    const now = new Date();
+    switch (periodFilter) {
+      case 'today': {
+        const d = now.toISOString().slice(0, 10);
+        return { from: d, to: d };
+      }
+      case 'week': {
+        const past = new Date(now.getTime() - 7 * 86400000);
+        return { from: past.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) };
+      }
+      case 'month': {
+        const past = new Date(now.getFullYear(), now.getMonth(), 1);
+        return { from: past.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) };
+      }
+      case 'year': {
+        const past = new Date(now.getFullYear(), 0, 1);
+        return { from: past.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) };
+      }
+      case 'custom':
+        return { from: customStartDate || undefined, to: customEndDate || undefined };
+      case 'all':
+      default:
+        return { from: undefined, to: undefined };
+    }
+  }, [periodFilter, customStartDate, customEndDate]);
+
+  // Get expenses
+  const expenses = useMemo(() => {
+    return ExpenseService.getExpenses(
+      {
+        category: categoryFilter === 'ALL' ? undefined : categoryFilter,
+        search: searchQuery,
+        startDate: dateRange.from,
+        endDate: dateRange.to,
+      },
+      currentUser
+    );
+  }, [categoryFilter, searchQuery, dateRange, currentUser, dbState.expenses]);
 
   const totalSpent = expenses.reduce((sum, e) => sum + e.amount, 0);
 
+  // Top category
+  const topCategory = useMemo(() => {
+    const totals: Record<string, number> = {};
+    expenses.forEach(e => {
+      totals[e.category] = (totals[e.category] || 0) + e.amount;
+    });
+    let topCat = '';
+    let topAmount = 0;
+    Object.entries(totals).forEach(([cat, amt]) => {
+      if (amt > topAmount) {
+        topAmount = amt;
+        topCat = cat;
+      }
+    });
+    if (topCat) {
+      const found = allCategories.find(c => c.id === topCat);
+      return found ? found.label : topCat;
+    }
+    return 'No data';
+  }, [expenses, allCategories]);
+
+  const getCategoryLabel = (catId: string): string => {
+    const found = allCategories.find(c => c.id === catId);
+    return found ? found.label : catId;
+  };
+
   const openAddModal = () => {
+    setEditingExpense(null);
     setTitle('');
     setCategory('ELECTRICITY');
     setAmount('');
     setPaymentMethod('CASH');
     setReference('');
     setNotes('');
+    setFormError('');
+    setIsModalOpen(true);
+  };
+
+  const openEditModal = (expense: Expense) => {
+    setEditingExpense(expense);
+    setTitle(expense.title || expense.description);
+    setCategory(expense.category);
+    setAmount(expense.amount.toString());
+    setPaymentMethod(expense.paymentMethod);
+    setReference(expense.reference || '');
+    setNotes(expense.notes || '');
     setFormError('');
     setIsModalOpen(true);
   };
@@ -75,40 +210,190 @@ export const AdminExpenses: React.FC = () => {
       return;
     }
 
-    const amt = parseFloat(amount);
+    const amt = parsePriceInput(amount);
     if (isNaN(amt) || amt <= 0) {
       setFormError('Please enter a valid expense amount.');
       return;
     }
 
-    const res = ExpenseService.createExpense(
-      {
-        title: title.trim(),
-        category,
-        amount: amt,
-        paymentMethod,
-        reference: reference.trim() || undefined,
-        notes: notes.trim() || undefined,
-      },
-      currentUser
-    );
+    if (editingExpense) {
+      const res = ExpenseService.updateExpense(
+        editingExpense.id,
+        {
+          title: title.trim(),
+          category,
+          amount: amt,
+          paymentMethod,
+          reference: reference.trim() || undefined,
+          notes: notes.trim() || undefined,
+        },
+        currentUser
+      );
 
-    if (res.success) {
-      addToast({
-        type: 'success',
-        title: 'Expense Recorded',
-        description: `Expense of ${formatCurrency(amt, settings.currencySymbol)} logged under ${category}.`,
-      });
-      setIsModalOpen(false);
+      if (res.success) {
+        addToast({
+          type: 'success',
+          title: 'Expense Updated',
+          description: `Expense updated successfully.`,
+        });
+        setIsModalOpen(false);
+        setEditingExpense(null);
+      } else {
+        setFormError(res.error || 'Failed to update expense.');
+      }
     } else {
-      setFormError(res.error || 'Failed to record expense.');
+      const res = ExpenseService.createExpense(
+        {
+          title: title.trim(),
+          category,
+          amount: amt,
+          paymentMethod,
+          reference: reference.trim() || undefined,
+          notes: notes.trim() || undefined,
+        },
+        currentUser
+      );
+
+      if (res.success) {
+        addToast({
+          type: 'success',
+          title: 'Expense Recorded',
+          description: `Expense of ${formatCurrency(amt, settings.currencySymbol)} logged under ${getCategoryLabel(category)}.`,
+        });
+        setIsModalOpen(false);
+      } else {
+        setFormError(res.error || 'Failed to record expense.');
+      }
     }
   };
 
+  const handleDeleteExpense = () => {
+    if (!deletingExpense || !currentUser) return;
+    const res = ExpenseService.deleteExpense(deletingExpense.id, currentUser);
+    if (res.success) {
+      addToast({
+        type: 'success',
+        title: 'Expense Deleted',
+        description: `Expense "${deletingExpense.title}" has been deleted.`,
+      });
+    } else {
+      addToast({
+        type: 'error',
+        title: 'Delete Failed',
+        description: res.error || 'Could not delete expense.',
+      });
+    }
+    setDeletingExpense(null);
+  };
+
+  const handleCreateCategory = () => {
+    setCategoryError('');
+    if (!newCategoryName.trim()) {
+      setCategoryError('Category name is required.');
+      return;
+    }
+    const cleanName = newCategoryName.trim();
+    const categoryId = `CUSTOM_${cleanName.toUpperCase().replace(/\s+/g, '_')}`;
+
+    const exists = allCategories.some(
+      c =>
+        c.id.toLowerCase() === categoryId.toLowerCase() ||
+        c.label.toLowerCase() === cleanName.toLowerCase()
+    );
+    if (exists) {
+      setCategoryError('A category with this name already exists.');
+      return;
+    }
+
+    const newCat: CustomCategory = { id: categoryId, label: cleanName, isCustom: true };
+    saveCustomCategories([...customCategories, newCat]);
+    setNewCategoryName('');
+    addToast({
+      type: 'success',
+      title: 'Category Created',
+      description: `Custom category "${cleanName}" added.`,
+    });
+  };
+
+  const handleEditCategory = (cat: CustomCategory) => {
+    setEditingCategory(cat);
+    setNewCategoryName(cat.label);
+    setCategoryError('');
+    setIsCategoryModalOpen(true);
+  };
+
+  const handleSaveEditedCategory = () => {
+    if (!editingCategory) return;
+    if (!newCategoryName.trim()) {
+      setCategoryError('Category name is required.');
+      return;
+    }
+    const cleanName = newCategoryName.trim();
+    const updatedCats = customCategories.map(c =>
+      c.id === editingCategory.id ? { ...c, label: cleanName } : c
+    );
+    saveCustomCategories(updatedCats);
+    setEditingCategory(null);
+    setNewCategoryName('');
+    setCategoryError('');
+    addToast({
+      type: 'success',
+      title: 'Category Updated',
+      description: `Category renamed to "${cleanName}".`,
+    });
+  };
+
+  const handleDeleteCategory = () => {
+    if (!deletingCategory) return;
+    const updatedCats = customCategories.filter(c => c.id !== deletingCategory.id);
+    saveCustomCategories(updatedCats);
+    if (categoryFilter === deletingCategory.id) setCategoryFilter('ALL');
+    if (category === deletingCategory.id) setCategory('ELECTRICITY');
+    addToast({
+      type: 'success',
+      title: 'Category Deleted',
+      description: `Category "${deletingCategory.label}" removed.`,
+    });
+    setDeletingCategory(null);
+  };
+
+  const handleOpenCategoryModal = () => {
+    setEditingCategory(null);
+    setNewCategoryName('');
+    setCategoryError('');
+    setIsCategoryModalOpen(true);
+  };
+
+  const getPeriodLabel = () => {
+    switch (periodFilter) {
+      case 'today': return 'Today';
+      case 'week': return 'Last 7 Days';
+      case 'month': return 'This Month';
+      case 'year': return 'This Year';
+      case 'custom': return 'Custom Range';
+      case 'all': return 'All Time';
+      default: return 'This Month';
+    }
+  };
+
+  const resetFilters = () => {
+    setPeriodFilter('month');
+    setSearchQuery('');
+    setCategoryFilter('ALL');
+    setCustomStartDate('');
+    setCustomEndDate('');
+  };
+
+  const hasActiveFilters =
+    periodFilter !== 'month' || !!searchQuery || categoryFilter !== 'ALL';
+
   return (
-    <div id="admin-expenses-view" className="flex-1 p-3.5 sm:p-6 bg-slate-950 text-slate-100 overflow-y-auto">
+    <div
+      id="admin-expenses-view"
+      className="flex-1 p-3.5 sm:p-6 bg-slate-950 text-slate-100 overflow-y-auto pb-24 sm:pb-6"
+    >
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 mb-6 pb-4 border-b border-slate-800">
+      <div className="flex flex-col gap-3 mb-5 pb-4 border-b border-slate-800">
         <div>
           <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">Operating Expenses</h2>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -116,80 +401,132 @@ export const AdminExpenses: React.FC = () => {
           </p>
         </div>
 
-        <button
-          id="record-expense-btn"
-          onClick={openAddModal}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-lg transition self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Record Expense</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={handleOpenCategoryModal}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 active:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-700 transition"
+            >
+              <FolderPlus className="w-4 h-4" />
+              <span>Categories</span>
+            </button>
+          )}
+
+          {canRecordExpense && (
+            <button
+              id="record-expense-btn"
+              onClick={openAddModal}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold text-xs shadow-lg transition"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Record Expense</span>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Summary KPI Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-4 mb-6">
+      {/* Summary KPI Row — 3 stacked compact cards */}
+      <div className="grid grid-cols-1 gap-2.5 mb-5">
         <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl">
           <div className="flex items-center justify-between text-slate-400 mb-1.5">
-            <span className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider">Total Recorded Spend</span>
-            <TrendingDown className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-400" />
+            <span className="text-[10px] font-semibold uppercase tracking-wider">
+              Total Spend ({getPeriodLabel()})
+            </span>
+            <TrendingDown className="w-4 h-4 text-rose-400" />
           </div>
-          <div className="text-xl sm:text-2xl font-bold text-rose-300 font-mono">
+          <div className="text-xl font-bold text-rose-300 font-mono">
             {formatCurrency(totalSpent, settings.currencySymbol)}
           </div>
           <p className="text-[10px] text-slate-400 mt-0.5">{expenses.length} expense transactions</p>
         </div>
 
-        <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl">
-          <div className="flex items-center justify-between text-slate-400 mb-1.5">
-            <span className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider">Top Spend Category</span>
-            <PieChart className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-400" />
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
+            <div className="flex items-center justify-between text-slate-400 mb-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider">Top Category</span>
+              <PieChart className="w-3.5 h-3.5 text-blue-400" />
+            </div>
+            <div className="text-sm font-bold text-white truncate">{topCategory}</div>
+            <p className="text-[10px] text-slate-400 mt-0.5">For selected period</p>
           </div>
-          <div className="text-base sm:text-lg font-bold text-white truncate">
-            {EXPENSE_CATEGORIES[0]?.label}
-          </div>
-          <p className="text-[10px] text-slate-400 mt-0.5 truncate">Automatic financial reporting included</p>
-        </div>
 
-        <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl">
-          <div className="flex items-center justify-between text-slate-400 mb-1.5">
-            <span className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider">Data Protection</span>
-            <DollarSign className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" />
+          <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
+            <div className="flex items-center justify-between text-slate-400 mb-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider">Categories</span>
+              <Tag className="w-3.5 h-3.5 text-amber-400" />
+            </div>
+            <div className="text-sm font-bold text-amber-300">{allCategories.length}</div>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              {customCategories.length} custom + {DEFAULT_EXPENSE_CATEGORIES.length} default
+            </p>
           </div>
-          <div className="text-sm sm:text-base font-bold text-amber-300">Protected From Sellers</div>
-          <p className="text-[10px] text-slate-400 mt-0.5 truncate">Sellers cannot view overhead expenses</p>
         </div>
       </div>
 
-      {/* Toolbar */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 mb-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 text-xs">
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 flex-1">
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search expenses, reference #, notes..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
+      {/* Mobile toolbar: search + filter sheet trigger */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 mb-4 space-y-2.5 text-xs">
+        <div className="relative">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search expenses, reference #, notes..."
+            className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
 
-          <select
-            value={categoryFilter}
-            onChange={e => setCategoryFilter(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsFilterSheetOpen(true)}
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 font-semibold active:bg-slate-800 transition"
           >
-            <option value="ALL">All Categories</option>
-            {EXPENSE_CATEGORIES.map(c => (
-              <option key={c.id} value={c.id}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+            <Filter className="w-3.5 h-3.5" />
+            <span>Filters</span>
+            <span className="px-1.5 py-0.5 rounded bg-blue-600 text-[10px] text-white">
+              {getPeriodLabel()}
+            </span>
+            <ChevronDown className="w-3.5 h-3.5 ml-auto" />
+          </button>
+
+          {hasActiveFilters && (
+            <button
+              onClick={resetFilters}
+              className="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-700 text-slate-300 font-semibold transition"
+            >
+              Reset
+            </button>
+          )}
+        </div>
+
+        {/* Active filter chips */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {categoryFilter !== 'ALL' && (
+            <span className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-[10px] text-slate-300 flex items-center gap-1">
+              {getCategoryLabel(categoryFilter)}
+              <button onClick={() => setCategoryFilter('ALL')} className="text-slate-400 hover:text-white">
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          )}
+          {periodFilter === 'custom' && (customStartDate || customEndDate) && (
+            <span className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-[10px] text-slate-300 flex items-center gap-1 font-mono">
+              {customStartDate || '…'} → {customEndDate || '…'}
+              <button
+                onClick={() => {
+                  setCustomStartDate('');
+                  setCustomEndDate('');
+                }}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Expenses: Mobile Cards & Desktop Table */}
+      {/* Expenses: Mobile Cards & Tablet/Desktop Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         {expenses.length === 0 ? (
           <div className="py-12 text-center text-slate-500">
@@ -198,50 +535,76 @@ export const AdminExpenses: React.FC = () => {
           </div>
         ) : (
           <>
-            {/* Mobile View (< lg) */}
-            <div className="lg:hidden divide-y divide-slate-800/80">
+            {/* Mobile Cards (< md) */}
+            <div className="md:hidden divide-y divide-slate-800/80">
               {expenses.map(expense => (
                 <div key={expense.id} className="p-3.5 space-y-2">
                   <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h4 className="font-bold text-xs text-white">{expense.title}</h4>
-                      <p className="text-[10px] font-mono text-slate-400">{formatDateTime(expense.createdAt)}</p>
+                    <div className="min-w-0 flex-1">
+                      <h4 className="font-bold text-xs text-white truncate">
+                        {expense.title || expense.description}
+                      </h4>
+                      <p className="text-[10px] font-mono text-slate-400">
+                        {formatDateTime(expense.createdAt)}
+                      </p>
                     </div>
-                    <div className="text-right">
+                    <div className="text-right shrink-0">
                       <div className="font-mono font-bold text-rose-400 text-sm">
                         {formatCurrency(expense.amount, settings.currencySymbol)}
                       </div>
-                      <span className="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 text-[9px] uppercase font-medium">
+                      <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[9px] uppercase font-medium">
                         {expense.paymentMethod}
                       </span>
                     </div>
                   </div>
 
                   <div className="flex items-center justify-between text-xs pt-1">
-                    <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-medium border border-slate-700/60 text-slate-300">
-                      {expense.category}
+                    <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-medium border border-slate-700/60 text-slate-300 truncate max-w-[55%]">
+                      {getCategoryLabel(expense.category)}
                     </span>
-                    <div className="text-[10px] text-slate-400">
-                      {expense.reference && <span className="font-mono mr-2">Ref: {expense.reference}</span>}
+                    <div className="text-[10px] text-slate-400 truncate">
+                      {expense.reference && (
+                        <span className="font-mono mr-2">Ref: {expense.reference}</span>
+                      )}
                       <span>By {expense.createdByName}</span>
                     </div>
                   </div>
+
+                  {isAdmin && (
+                    <div className="flex items-center gap-2 pt-1.5 border-t border-slate-800/60">
+                      <button
+                        onClick={() => openEditModal(expense)}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-slate-800 hover:bg-blue-600 active:bg-blue-700 text-slate-300 hover:text-white transition text-[11px] font-semibold"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => setDeletingExpense(expense)}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-slate-800 hover:bg-rose-600 active:bg-rose-700 text-slate-300 hover:text-white transition text-[11px] font-semibold"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
 
-            {/* Desktop View: Table (lg+) */}
-            <div className="hidden lg:block overflow-x-auto">
+            {/* Tablet / Desktop Table (md+) */}
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400">
                     <th className="py-3 px-4 font-semibold">Date</th>
                     <th className="py-3 px-4 font-semibold">Expense Title</th>
                     <th className="py-3 px-4 font-semibold">Category</th>
-                    <th className="py-3 px-4 font-semibold">Payment Method</th>
+                    <th className="py-3 px-4 font-semibold">Payment</th>
                     <th className="py-3 px-4 font-semibold">Reference</th>
-                    <th className="py-3 px-4 font-semibold">Recorded By</th>
+                    <th className="py-3 px-4 font-semibold">By</th>
                     <th className="py-3 px-4 text-right font-semibold">Amount</th>
+                    {isAdmin && <th className="py-3 px-4 text-right font-semibold">Actions</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
@@ -250,10 +613,12 @@ export const AdminExpenses: React.FC = () => {
                       <td className="py-3.5 px-4 text-slate-400 font-mono">
                         {formatDateTime(expense.createdAt)}
                       </td>
-                      <td className="py-3.5 px-4 font-bold text-white">{expense.title}</td>
+                      <td className="py-3.5 px-4 font-bold text-white">
+                        {expense.title || expense.description}
+                      </td>
                       <td className="py-3.5 px-4 text-slate-300">
                         <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] font-medium border border-slate-700/60">
-                          {expense.category}
+                          {getCategoryLabel(expense.category)}
                         </span>
                       </td>
                       <td className="py-3.5 px-4">
@@ -268,6 +633,24 @@ export const AdminExpenses: React.FC = () => {
                       <td className="py-3.5 px-4 text-right font-mono font-bold text-rose-400 text-sm">
                         {formatCurrency(expense.amount, settings.currencySymbol)}
                       </td>
+                      {isAdmin && (
+                        <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
+                          <button
+                            onClick={() => openEditModal(expense)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-blue-600 text-slate-300 hover:text-white transition"
+                            title="Edit expense"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setDeletingExpense(expense)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white transition"
+                            title="Delete expense"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -277,17 +660,139 @@ export const AdminExpenses: React.FC = () => {
         )}
       </div>
 
-      {/* Modal: Record Expense */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-3.5 sm:p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
+      {/* Mobile Filter Sheet */}
+      {isFilterSheetOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/80 backdrop-blur-sm"
+          onClick={() => setIsFilterSheetOpen(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md p-4 sm:p-6 shadow-2xl max-h-[85vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+              <div className="flex items-center gap-2">
+                <Filter className="w-5 h-5 text-blue-400" />
+                <h3 className="text-base font-bold text-white">Filter Expenses</h3>
+              </div>
+              <button
+                onClick={() => setIsFilterSheetOpen(false)}
+                className="text-slate-400 hover:text-white p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1.5">Period</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {[
+                    { id: 'today', label: 'Today' },
+                    { id: 'week', label: 'Week' },
+                    { id: 'month', label: 'Month' },
+                    { id: 'year', label: 'Year' },
+                    { id: 'all', label: 'All Time' },
+                    { id: 'custom', label: 'Custom' },
+                  ].map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => setPeriodFilter(p.id as PeriodFilter)}
+                      className={`py-2.5 rounded-lg font-semibold transition ${
+                        periodFilter === p.id
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-950 border border-slate-800 text-slate-300'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {periodFilter === 'custom' && (
+                <div className="space-y-2 p-3 rounded-lg bg-slate-950 border border-slate-800">
+                  <div>
+                    <label className="block text-slate-400 text-[11px] mb-1">From</label>
+                    <input
+                      type="date"
+                      value={customStartDate}
+                      onChange={e => setCustomStartDate(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 text-[11px] mb-1">To</label>
+                    <input
+                      type="date"
+                      value={customEndDate}
+                      onChange={e => setCustomEndDate(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1.5">Category</label>
+                <select
+                  value={categoryFilter}
+                  onChange={e => setCategoryFilter(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="ALL">All Categories ({allCategories.length})</option>
+                  {DEFAULT_EXPENSE_CATEGORIES.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.label}
+                    </option>
+                  ))}
+                  {customCategories.length > 0 && (
+                    <optgroup label="Custom Categories">
+                      {customCategories.map(c => (
+                        <option key={c.id} value={c.id}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex justify-between gap-2">
+                <button
+                  onClick={resetFilters}
+                  className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition"
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={() => setIsFilterSheetOpen(false)}
+                  className="px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold transition"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Record / Edit Expense */}
+      {isModalOpen && canRecordExpense && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/80 backdrop-blur-sm sm:p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
               <div className="flex items-center gap-2">
                 <CreditCard className="w-5 h-5 text-blue-400" />
-                <h3 className="text-base font-bold text-white">Record Operating Expense</h3>
+                <h3 className="text-base font-bold text-white">
+                  {editingExpense ? 'Edit Expense' : 'Record Operating Expense'}
+                </h3>
               </div>
               <button
-                onClick={() => setIsModalOpen(false)}
+                onClick={() => {
+                  setIsModalOpen(false);
+                  setEditingExpense(null);
+                }}
                 className="text-slate-400 hover:text-white p-1"
               >
                 <X className="w-5 h-5" />
@@ -309,53 +814,61 @@ export const AdminExpenses: React.FC = () => {
                   value={title}
                   onChange={e => setTitle(e.target.value)}
                   placeholder="e.g. Electricity Bill - July 2026"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-3">
                 <div>
                   <label className="block text-slate-300 font-medium mb-1">Category</label>
                   <select
                     value={category}
-                    onChange={e => setCategory(e.target.value as ExpenseCategory)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    onChange={e => setCategory(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
-                    {EXPENSE_CATEGORIES.map(c => (
+                    {DEFAULT_EXPENSE_CATEGORIES.map(c => (
                       <option key={c.id} value={c.id}>
                         {c.label}
                       </option>
                     ))}
+                    {customCategories.length > 0 && (
+                      <optgroup label="Custom Categories">
+                        {customCategories.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
 
                 <div>
                   <label className="block text-slate-300 font-medium mb-1">Amount Spent *</label>
                   <div className="relative">
-                    <span className="absolute left-2.5 top-2 text-slate-500 font-mono">
+                    <span className="absolute left-3 top-2.5 text-slate-500 font-mono">
                       {settings.currencySymbol}
                     </span>
                     <input
-                      type="number"
-                      step="0.01"
-                      min="0.01"
+                      type="text"
+                      inputMode="decimal"
                       required
                       value={amount}
-                      onChange={e => setAmount(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-6 pr-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      onChange={e => setAmount(formatPriceInput(e.target.value))}
+                      placeholder="0"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-3">
                 <div>
                   <label className="block text-slate-300 font-medium mb-1">Payment Method</label>
                   <select
                     value={paymentMethod}
                     onChange={e => setPaymentMethod(e.target.value as PaymentMethod)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
                     <option value="CASH">Cash</option>
                     <option value="BANK">Bank Transfer / Check</option>
@@ -371,7 +884,7 @@ export const AdminExpenses: React.FC = () => {
                     value={reference}
                     onChange={e => setReference(e.target.value)}
                     placeholder="e.g. UTL-9912"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
               </div>
@@ -390,19 +903,227 @@ export const AdminExpenses: React.FC = () => {
               <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition"
+                  onClick={() => {
+                    setIsModalOpen(false);
+                    setEditingExpense(null);
+                  }}
+                  className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition"
+                  className="px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition flex items-center gap-1.5"
                 >
-                  Save Expense
+                  <Save className="w-3.5 h-3.5" />
+                  {editingExpense ? 'Save Changes' : 'Save Expense'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Manage Categories */}
+      {isCategoryModalOpen && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/80 backdrop-blur-sm sm:p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+              <div className="flex items-center gap-2">
+                <Tag className="w-5 h-5 text-amber-400" />
+                <h3 className="text-base font-bold text-white">Manage Expense Categories</h3>
+              </div>
+              <button
+                onClick={() => {
+                  setIsCategoryModalOpen(false);
+                  setEditingCategory(null);
+                  setNewCategoryName('');
+                  setCategoryError('');
+                }}
+                className="text-slate-400 hover:text-white p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Add / Edit Category Form */}
+            <div className="mb-4 p-3 rounded-lg bg-slate-950 border border-slate-800">
+              <label className="block text-slate-300 font-medium mb-1.5 text-xs">
+                {editingCategory ? 'Edit Category Name' : 'Create New Category'}
+              </label>
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={newCategoryName}
+                  onChange={e => setNewCategoryName(e.target.value)}
+                  placeholder="e.g. Water Bills, Repairs..."
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={editingCategory ? handleSaveEditedCategory : handleCreateCategory}
+                    className="flex-1 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white font-semibold text-xs transition flex items-center justify-center gap-1"
+                  >
+                    {editingCategory ? (
+                      <>
+                        <Save className="w-3.5 h-3.5" />
+                        Save Changes
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-3.5 h-3.5" />
+                        Add Category
+                      </>
+                    )}
+                  </button>
+                  {editingCategory && (
+                    <button
+                      onClick={() => {
+                        setEditingCategory(null);
+                        setNewCategoryName('');
+                        setCategoryError('');
+                      }}
+                      className="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              </div>
+              {categoryError && (
+                <p className="text-rose-400 text-[11px] mt-1.5">{categoryError}</p>
+              )}
+            </div>
+
+            {/* Custom Categories List */}
+            <div className="space-y-2">
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                Custom Categories ({customCategories.length})
+              </div>
+              {customCategories.length === 0 ? (
+                <div className="p-4 text-center text-slate-500 text-xs border border-dashed border-slate-800 rounded-lg">
+                  No custom categories yet. Create one above.
+                </div>
+              ) : (
+                customCategories.map(cat => (
+                  <div
+                    key={cat.id}
+                    className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Tag className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-xs text-white font-medium truncate">{cat.label}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{cat.id}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => handleEditCategory(cat)}
+                        className="p-2 rounded-lg hover:bg-blue-600 text-slate-400 hover:text-white transition"
+                        title="Edit category"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setDeletingCategory(cat)}
+                        className="p-2 rounded-lg hover:bg-rose-600 text-slate-400 hover:text-white transition"
+                        title="Delete category"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Default Categories (read-only) */}
+            <div className="mt-5 space-y-2">
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                Default Categories ({DEFAULT_EXPENSE_CATEGORIES.length}) — Read Only
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                {DEFAULT_EXPENSE_CATEGORIES.map(cat => (
+                  <div
+                    key={cat.id}
+                    className="p-2 rounded-lg bg-slate-950/60 border border-slate-800/60 text-[11px] text-slate-400"
+                  >
+                    {cat.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Expense Confirmation */}
+      {deletingExpense && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl">
+            <div className="flex items-center gap-2 mb-3 text-rose-400">
+              <AlertTriangle className="w-5 h-5" />
+              <h3 className="text-base font-bold text-white">Delete Expense?</h3>
+            </div>
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-200 text-xs mb-4">
+              <strong>Warning:</strong> This action cannot be undone.
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Delete expense{' '}
+              <strong className="text-white">"{deletingExpense.title}"</strong> of{' '}
+              <strong className="text-white">
+                {formatCurrency(deletingExpense.amount, settings.currencySymbol)}
+              </strong>
+              ?
+            </p>
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+              <button
+                onClick={() => setDeletingExpense(null)}
+                className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteExpense}
+                className="px-4 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold"
+              >
+                Delete Expense
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Category Confirmation */}
+      {deletingCategory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl">
+            <div className="flex items-center gap-2 mb-3 text-rose-400">
+              <AlertTriangle className="w-5 h-5" />
+              <h3 className="text-base font-bold text-white">Delete Category?</h3>
+            </div>
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-200 text-xs mb-4">
+              <strong>Warning:</strong> This only removes the category option. Existing expenses will
+              keep their category label.
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Delete category <strong className="text-white">"{deletingCategory.label}"</strong>?
+            </p>
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+              <button
+                onClick={() => setDeletingCategory(null)}
+                className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteCategory}
+                className="px-4 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold"
+              >
+                Delete Category
+              </button>
+            </div>
           </div>
         </div>
       )}
