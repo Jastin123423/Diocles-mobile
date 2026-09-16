@@ -2,6 +2,25 @@ export type UserRole = 'ADMIN' | 'SELLER';
 
 export type UserStatus = 'ACTIVE' | 'INACTIVE';
 
+// ==========================================
+// SELLER PERMISSIONS (GRANULAR ACCESS CONTROL)
+// ==========================================
+export interface SellerPermissions {
+  canEditProducts?: boolean;      // Edit existing products
+  canDeleteProducts?: boolean;    // Delete products
+  canViewExpenses?: boolean;      // View expenses
+  canRecordExpenses?: boolean;    // Record expenses
+  canManageInventory?: boolean;   // Stock adjustments
+  canEditSales?: boolean;         // Edit sales without approval
+  canDeleteSales?: boolean;       // Void sales
+  canManageDebts?: boolean;       // Manage all debts (not just own)
+  canViewReports?: boolean;       // View financial reports
+  canManageShops?: boolean;       // Manage shops
+  canManageSellers?: boolean;     // Manage other sellers
+  canRecordPurchases?: boolean;   // Record purchases
+  canViewPurchases?: boolean;     // View purchases
+}
+
 export interface User {
   id: string;
   username: string;
@@ -11,7 +30,8 @@ export interface User {
   color: string;
   status: UserStatus;
   assignedShopIds?: string[];
-  avatarUrl?: string; // ADDED: Profile picture URL
+  avatarUrl?: string; // Profile picture URL
+  permissions?: SellerPermissions; // NEW: Granular permissions for sellers
   createdAt: string;
   updatedAt: string;
 }
@@ -125,7 +145,55 @@ export interface Sale {
   items: SaleItem[];
 }
 
-export type MovementType = 'SALE' | 'PURCHASE' | 'ADJUSTMENT' | 'CORRECTION' | 'RETURN' | 'VOID_RETURN' | 'DAMAGED' | 'BROKEN' | 'EXPIRED' | 'LOST';
+// ==========================================
+// SALE EDIT REQUEST (APPROVAL WORKFLOW)
+// ==========================================
+export type SaleEditRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface SaleEditRequest {
+  id: string;
+  saleId: string;
+  requestedByUserId: string;
+  requestedByName: string;
+  originalValues: {
+    items: SaleItem[];
+    total: number;
+    subtotal: number;
+    grossProfit: number;
+    costOfGoods: number;
+    amountReceived: number;
+    change: number;
+  };
+  newValues: {
+    items: SaleItem[];
+    total: number;
+    subtotal: number;
+    grossProfit: number;
+    costOfGoods: number;
+    amountReceived: number;
+    change: number;
+  };
+  reason: string;
+  status: SaleEditRequestStatus;
+  reviewedByUserId?: string;
+  reviewedByName?: string;
+  reviewNote?: string;
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+export type MovementType =
+  | 'SALE'
+  | 'PURCHASE'
+  | 'PURCHASE_EDIT'
+  | 'ADJUSTMENT'
+  | 'CORRECTION'
+  | 'RETURN'
+  | 'VOID_RETURN'
+  | 'DAMAGED'
+  | 'BROKEN'
+  | 'EXPIRED'
+  | 'LOST';
 
 export interface InventoryMovement {
   id: string;
@@ -171,6 +239,7 @@ export interface Purchase {
   createdByUserId: string;
   createdByName: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export type ExpenseCategory =
@@ -227,7 +296,20 @@ export interface AuditLog {
   userName: string;
   action: string;
   details: string;
-  entityType: 'PRODUCT' | 'SALE' | 'PURCHASE' | 'EXPENSE' | 'SELLER' | 'INVENTORY' | 'SETTINGS' | 'AUTH' | 'BACKUP' | 'SHOP' | 'IMPORT';
+  entityType:
+    | 'PRODUCT'
+    | 'SALE'
+    | 'PURCHASE'
+    | 'EXPENSE'
+    | 'SELLER'
+    | 'INVENTORY'
+    | 'SETTINGS'
+    | 'AUTH'
+    | 'BACKUP'
+    | 'SHOP'
+    | 'IMPORT'
+    | 'SALE_EDIT'
+    | 'DEBT';
   entityId?: string;
   shopId?: string;
   timestamp: string;
@@ -239,19 +321,29 @@ export type SyncOperation =
   | 'CREATE_PRODUCT'
   | 'UPDATE_PRODUCT'
   | 'TOGGLE_PRODUCT_STATUS'
+  | 'DELETE_PRODUCT'
   | 'CREATE_SALE'
+  | 'UPDATE_SALE'
   | 'VOID_SALE'
   | 'CREATE_PURCHASE'
+  | 'UPDATE_PURCHASE'
   | 'CREATE_EXPENSE'
+  | 'UPDATE_EXPENSE'
+  | 'DELETE_EXPENSE'
   | 'CREATE_SELLER'
   | 'UPDATE_SELLER'
+  | 'DELETE_SELLER'
   | 'STOCK_ADJUSTMENT'
   | 'UPDATE_SETTINGS'
   | 'CREATE_SHOP'
   | 'UPDATE_SHOP'
   | 'TOGGLE_SHOP_STATUS'
+  | 'DELETE_SHOP'
+  | 'CREATE_SALE_EDIT_REQUEST'
+  | 'REVIEW_SALE_EDIT_REQUEST'
   | 'CREATE_DEBT'
-  | 'UPDATE_DEBT';
+  | 'UPDATE_DEBT'
+  | 'DELETE_DEBT';
 
 export interface SyncQueueItem {
   id: string;
@@ -283,7 +375,15 @@ export interface ColorOption {
   text: string;
 }
 
-export type CsvDataType = 'PRODUCTS' | 'INVENTORY' | 'SALES' | 'PURCHASES' | 'EXPENSES' | 'SELLERS' | 'SHOPS' | 'DEBTS';
+export type CsvDataType =
+  | 'PRODUCTS'
+  | 'INVENTORY'
+  | 'SALES'
+  | 'PURCHASES'
+  | 'EXPENSES'
+  | 'SELLERS'
+  | 'SHOPS'
+  | 'DEBTS';
 
 export interface ImportHistoryItem {
   id: string;
@@ -305,7 +405,14 @@ export interface ImportHistoryItem {
 // ==========================================
 export type DebtType = 'WE_DEMAND' | 'THEY_DEMAND';
 
-export type DebtStatus = 'PENDING' | 'DUE_TODAY' | 'OVERDUE' | 'PARTIALLY_PAID' | 'PAID' | 'CANCELLED' | 'ARCHIVED';
+export type DebtStatus =
+  | 'PENDING'
+  | 'DUE_TODAY'
+  | 'OVERDUE'
+  | 'PARTIALLY_PAID'
+  | 'PAID'
+  | 'CANCELLED'
+  | 'ARCHIVED';
 
 export interface DebtPayment {
   id: string;
@@ -384,6 +491,9 @@ export type NotificationType =
   | 'PRICE_CHANGE_SELLER'
   | 'PRICE_CHANGE_ADMIN'
   | 'LOSS_OCCURRED'
+  | 'SALE_EDIT_REQUESTED'
+  | 'SALE_EDIT_APPROVED'
+  | 'SALE_EDIT_REJECTED'
   | 'SYSTEM_EVENT';
 
 export interface AppNotification {
@@ -398,7 +508,7 @@ export interface AppNotification {
   targetUserIds?: string[];
   targetRole?: 'ADMIN' | 'SELLER' | 'ALL';
   relatedEntityId?: string;
-  relatedEntityType?: 'DEBT' | 'PRODUCT' | 'SHOP' | 'SALE';
+  relatedEntityType?: 'DEBT' | 'PRODUCT' | 'SHOP' | 'SALE' | 'SALE_EDIT_REQUEST';
   createdAt: string;
   readByUserIds: string[];
 }
