@@ -67,24 +67,25 @@ export class DebtService {
    */
   public static getAllDebts(currentUser?: User): DebtRecord[] {
     let rawDebts = db.getDebts();
-    
+
     // Filter: Admin sees all, Sellers see only their own
     if (currentUser && currentUser.role === 'SELLER') {
       rawDebts = rawDebts.filter(d => d.createdByUserId === currentUser.id);
     }
-    
+
     const todayStr = this.getTodayStr();
 
     return rawDebts.map(d => {
       const paidAmount = d.paidAmount || 0;
-      const remainingAmount = d.remainingAmount !== undefined ? d.remainingAmount : Math.max(0, d.amount - paidAmount);
+      const remainingAmount =
+        d.remainingAmount !== undefined ? d.remainingAmount : Math.max(0, d.amount - paidAmount);
       const computedStatus = this.calculateStatus({ ...d, remainingAmount, paidAmount }, todayStr);
 
       return {
         ...d,
         paidAmount,
         remainingAmount,
-        status: (d.status === 'CANCELLED' || d.status === 'ARCHIVED') ? d.status : computedStatus,
+        status: d.status === 'CANCELLED' || d.status === 'ARCHIVED' ? d.status : computedStatus,
       };
     });
   }
@@ -122,8 +123,10 @@ export class DebtService {
       const target = d.type === 'WE_DEMAND' ? summary.weDemand : summary.theyDemand;
       target.totalCount += 1;
 
-      const remaining = d.remainingAmount !== undefined ? d.remainingAmount : (d.status === 'PAID' ? 0 : d.amount);
-      const paid = d.paidAmount !== undefined ? d.paidAmount : (d.status === 'PAID' ? d.amount : 0);
+      const remaining =
+        d.remainingAmount !== undefined ? d.remainingAmount : d.status === 'PAID' ? 0 : d.amount;
+      const paid =
+        d.paidAmount !== undefined ? d.paidAmount : d.status === 'PAID' ? d.amount : 0;
 
       if (d.status === 'PAID') {
         target.paidCount += 1;
@@ -204,7 +207,6 @@ export class DebtService {
 
     db.addDebt(record);
 
-    // Enqueue sync for cloud
     db.enqueueSync({
       id: generateUUID(),
       operation: 'CREATE_DEBT',
@@ -239,15 +241,24 @@ export class DebtService {
 
     // Ownership check: Seller can only pay their own debts
     if (user.role === 'SELLER' && existing.createdByUserId !== user.id) {
-      return { success: false, error: 'Unaweza kusimamia madeni yako tu / You can only manage your own debts.' };
+      return {
+        success: false,
+        error: 'Unaweza kusimamia madeni yako tu / You can only manage your own debts.',
+      };
     }
 
     if (paymentAmount <= 0) {
-      return { success: false, error: 'Kiasi cha malipo kinapaswa kuwa zaidi ya 0 / Payment amount must be > 0' };
+      return {
+        success: false,
+        error: 'Kiasi cha malipo kinapaswa kuwa zaidi ya 0 / Payment amount must be > 0',
+      };
     }
 
     const currentPaid = existing.paidAmount || (existing.status === 'PAID' ? existing.amount : 0);
-    const currentRemaining = existing.remainingAmount !== undefined ? existing.remainingAmount : Math.max(0, existing.amount - currentPaid);
+    const currentRemaining =
+      existing.remainingAmount !== undefined
+        ? existing.remainingAmount
+        : Math.max(0, existing.amount - currentPaid);
 
     if (paymentAmount > currentRemaining && currentRemaining > 0) {
       return {
@@ -300,7 +311,6 @@ export class DebtService {
 
     const updated = { ...existing, ...patch };
 
-    // Enqueue sync for cloud
     db.enqueueSync({
       id: generateUUID(),
       operation: 'UPDATE_DEBT',
@@ -333,13 +343,21 @@ export class DebtService {
     }
 
     const currentPaid = existing.paidAmount || 0;
-    const currentRemaining = existing.remainingAmount !== undefined ? existing.remainingAmount : Math.max(0, existing.amount - currentPaid);
+    const currentRemaining =
+      existing.remainingAmount !== undefined
+        ? existing.remainingAmount
+        : Math.max(0, existing.amount - currentPaid);
 
-    const res = this.recordPayment(debtId, currentRemaining > 0 ? currentRemaining : existing.amount, user, {
-      paymentDate: paymentDate.slice(0, 10),
-      notes: paymentNotes,
-      paymentMethod: 'CASH',
-    });
+    const res = this.recordPayment(
+      debtId,
+      currentRemaining > 0 ? currentRemaining : existing.amount,
+      user,
+      {
+        paymentDate: paymentDate.slice(0, 10),
+        notes: paymentNotes,
+        paymentMethod: 'CASH',
+      }
+    );
 
     return res.success;
   }
@@ -358,7 +376,7 @@ export class DebtService {
     }
 
     if (patch.amount !== undefined) {
-      const paid = patch.paidAmount !== undefined ? patch.paidAmount : (existing.paidAmount || 0);
+      const paid = patch.paidAmount !== undefined ? patch.paidAmount : existing.paidAmount || 0;
       patch.remainingAmount = Math.max(0, patch.amount - paid);
       if (patch.remainingAmount <= 0) {
         patch.status = 'PAID';
@@ -384,6 +402,7 @@ export class DebtService {
 
   /**
    * Delete or archive a debt record with ownership check
+   * Admin can delete any, Seller can only delete their own
    */
   public static deleteDebt(debtId: string, currentUser?: User): boolean {
     const rawDebts = db.getDebts();
@@ -395,7 +414,20 @@ export class DebtService {
       return false;
     }
 
+    // Delete from local database
     db.deleteDebt(debtId);
+
+    // CRITICAL FIX: Enqueue DELETE_DEBT sync operation
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'DELETE_DEBT',
+      entityType: 'DEBT',
+      entityId: debtId,
+      payload: { id: debtId },
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+
     return true;
   }
 }
