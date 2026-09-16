@@ -11,11 +11,11 @@ function base64ToBlob(dataUrl: string, mimeType: string): Promise<Blob> {
       const base64 = dataUrl.split(',')[1];
       const binary = atob(base64);
       const array = new Uint8Array(binary.length);
-      
+
       for (let i = 0; i < binary.length; i++) {
         array[i] = binary.charCodeAt(i);
       }
-      
+
       resolve(new Blob([array], { type: mimeType }));
     } catch (error) {
       reject(error);
@@ -124,6 +124,7 @@ export class ProductService {
 
   /**
    * Seller or Admin can create a new product.
+   * Associated with the target shop.
    */
   public static async createProduct(
     data: {
@@ -143,6 +144,17 @@ export class ProductService {
     },
     currentUser: User
   ): Promise<{ success: boolean; product?: Product; error?: string }> {
+    // Sellers can create products for their assigned shops
+    if (currentUser.role === 'SELLER') {
+      const assigned = currentUser.assignedShopIds || [];
+      if (assigned.length > 0 && !assigned.includes(data.shopId)) {
+        return {
+          success: false,
+          error: 'Permission Denied: You are not assigned to this shop.',
+        };
+      }
+    }
+
     if (!data.name?.trim()) {
       return { success: false, error: 'Product name is required.' };
     }
@@ -162,8 +174,10 @@ export class ProductService {
 
     const products = db.getProducts();
     const cleanSku = data.sku?.trim() || `SKU-${Date.now().toString().slice(-6)}`;
-    const cleanBarcode = data.barcode?.trim() || `${Math.floor(100000000000 + Math.random() * 900000000000)}`;
+    const cleanBarcode =
+      data.barcode?.trim() || `${Math.floor(100000000000 + Math.random() * 900000000000)}`;
 
+    // SKU uniqueness within the shop
     const duplicateSku = products.find(
       p => p.shopId === data.shopId && p.sku.toLowerCase() === cleanSku.toLowerCase()
     );
@@ -172,20 +186,22 @@ export class ProductService {
     }
 
     const productId = generateUUID();
-    
+
     // Normalize images first
-    let normalizedImages = data.images && data.images.length > 0
-      ? normalizeProductImages(data.images.map(img => ({ ...img, productId })))
-      : undefined;
+    let normalizedImages =
+      data.images && data.images.length > 0
+        ? normalizeProductImages(data.images.map(img => ({ ...img, productId })))
+        : undefined;
 
     // Upload images to R2
     if (normalizedImages && normalizedImages.length > 0) {
       normalizedImages = await this.uploadImagesToR2(normalizedImages, productId);
     }
 
-    const mainImageUrl = normalizedImages && normalizedImages.length > 0
-      ? (normalizedImages[0].thumbnailUrl || normalizedImages[0].dataUrl)
-      : data.imageUrl;
+    const mainImageUrl =
+      normalizedImages && normalizedImages.length > 0
+        ? normalizedImages[0].thumbnailUrl || normalizedImages[0].dataUrl
+        : data.imageUrl;
 
     const newProduct: Product = {
       id: productId,
@@ -209,6 +225,7 @@ export class ProductService {
     const updated = [newProduct, ...products];
     db.saveProducts(updated);
 
+    // If initial stock is greater than 0, record initial inventory movement with shopId
     if (newProduct.currentStock > 0) {
       db.saveMovements([
         {
@@ -230,6 +247,7 @@ export class ProductService {
       ]);
     }
 
+    // Sync queue item
     db.enqueueSync({
       id: generateUUID(),
       operation: 'CREATE_PRODUCT',
@@ -240,6 +258,7 @@ export class ProductService {
       createdAt: new Date().toISOString(),
     });
 
+    // Audit log
     db.addAuditLog({
       id: generateUUID(),
       userId: currentUser.id,
@@ -255,17 +274,18 @@ export class ProductService {
   }
 
   /**
-   * Only Admin can edit existing products.
+   * Admin or Seller with canEditProducts permission can edit existing products.
    */
   public static async updateProduct(
     id: string,
     updates: Partial<Omit<Product, 'id' | 'createdAt'>>,
     currentUser: User
   ): Promise<{ success: boolean; product?: Product; error?: string }> {
-    if (currentUser.role !== 'ADMIN') {
+    // FIX: Allow Admin OR Seller with canEditProducts permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canEditProducts) {
       return {
         success: false,
-        error: 'Permission Denied: Sellers cannot edit existing products. Please request an Administrator.',
+        error: 'Permission Denied: You do not have permission to edit products.',
       };
     }
 
@@ -278,9 +298,13 @@ export class ProductService {
     const current = products[index];
     const targetShopId = updates.shopId || current.shopId;
 
+    // If SKU changed, check uniqueness within shop
     if (updates.sku && updates.sku !== current.sku) {
       const dup = products.find(
-        p => p.id !== id && p.shopId === targetShopId && p.sku.toLowerCase() === updates.sku!.toLowerCase()
+        p =>
+          p.id !== id &&
+          p.shopId === targetShopId &&
+          p.sku.toLowerCase() === updates.sku!.toLowerCase()
       );
       if (dup) {
         return { success: false, error: `SKU '${updates.sku}' is already assigned in this shop.` };
@@ -290,14 +314,20 @@ export class ProductService {
     let finalImages = updates.images !== undefined ? updates.images : current.images;
     if (finalImages && finalImages.length > 0) {
       finalImages = normalizeProductImages(finalImages.map(img => ({ ...img, productId: id })));
+      // Upload images to R2
       finalImages = await this.uploadImagesToR2(finalImages, id);
     } else {
       finalImages = undefined;
     }
 
-    const finalImageUrl = finalImages && finalImages.length > 0
-      ? (finalImages[0].thumbnailUrl || finalImages[0].dataUrl)
-      : (updates.imageUrl !== undefined ? updates.imageUrl : (finalImages ? undefined : current.imageUrl));
+    const finalImageUrl =
+      finalImages && finalImages.length > 0
+        ? finalImages[0].thumbnailUrl || finalImages[0].dataUrl
+        : updates.imageUrl !== undefined
+        ? updates.imageUrl
+        : finalImages
+        ? undefined
+        : current.imageUrl;
 
     const updatedProduct: Product = {
       ...current,
@@ -310,6 +340,7 @@ export class ProductService {
     products[index] = updatedProduct;
     db.saveProducts(products);
 
+    // Sync queue
     db.enqueueSync({
       id: generateUUID(),
       operation: 'UPDATE_PRODUCT',
@@ -320,12 +351,13 @@ export class ProductService {
       createdAt: new Date().toISOString(),
     });
 
+    // Audit log
     db.addAuditLog({
       id: generateUUID(),
       userId: currentUser.id,
       userName: currentUser.name,
       action: 'UPDATE_PRODUCT',
-      details: `Updated product '${updatedProduct.name}' (Price: ${settings.currencySymbol || 'TSh'} ${updatedProduct.sellingPrice})`,
+      details: `Updated product '${updatedProduct.name}' (Price: ${updatedProduct.sellingPrice})`,
       entityType: 'PRODUCT',
       entityId: id,
       timestamp: new Date().toISOString(),
@@ -336,16 +368,74 @@ export class ProductService {
 
   /**
    * Toggle Product Active/Inactive status.
+   * Admin or Seller with canEditProducts permission.
    */
-  public static async toggleProductStatus(
+  public static toggleProductStatus(
     id: string,
     newStatus: ProductStatus,
     currentUser: User
-  ): Promise<{ success: boolean; error?: string }> {
-    if (currentUser.role !== 'ADMIN') {
-      return { success: false, error: 'Permission Denied: Only Admin can change product status.' };
+  ): { success: boolean; error?: string } {
+    // FIX: Allow Admin OR Seller with canEditProducts permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canEditProducts) {
+      return {
+        success: false,
+        error: 'Permission Denied: You do not have permission to change product status.',
+      };
     }
 
-    return this.updateProduct(id, { status: newStatus }, currentUser);
+    return this.updateProduct(id, { status: newStatus }, currentUser) as any;
+  }
+
+  /**
+   * Delete a product permanently.
+   * Admin or Seller with canDeleteProducts permission.
+   */
+  public static deleteProduct(
+    productId: string,
+    currentUser: User
+  ): { success: boolean; error?: string } {
+    // FIX: Allow Admin OR Seller with canDeleteProducts permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canDeleteProducts) {
+      return {
+        success: false,
+        error: 'Permission Denied: You do not have permission to delete products.',
+      };
+    }
+
+    const products = db.getProducts();
+    const product = products.find(p => p.id === productId);
+
+    if (!product) {
+      return { success: false, error: 'Product not found.' };
+    }
+
+    // Remove product
+    const updatedProducts = products.filter(p => p.id !== productId);
+    db.saveProducts(updatedProducts);
+
+    // Sync to cloud
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'DELETE_PRODUCT',
+      entityType: 'PRODUCT',
+      entityId: productId,
+      payload: { id: productId },
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+
+    // Audit log
+    db.addAuditLog({
+      id: generateUUID(),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      action: 'DELETE_PRODUCT',
+      details: `Deleted product: ${product.name} (${product.sku})`,
+      entityType: 'PRODUCT',
+      entityId: productId,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { success: true };
   }
 }
