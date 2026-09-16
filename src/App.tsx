@@ -51,6 +51,8 @@ const MainLayout: React.FC = () => {
     }
 
     if (currentUser.role === 'SELLER') {
+      const permissions = currentUser.permissions || {};
+
       switch (activeTab) {
         case 'dashboard':
           return <SellerDashboard />;
@@ -59,7 +61,44 @@ const MainLayout: React.FC = () => {
         case 'products':
           return <SellerProducts />;
         case 'purchases':
+          // Sellers can always view/record purchases
           return <AdminPurchases />;
+        case 'sales':
+          // Allow seller with canEditSales or canDeleteSales to view sales history
+          if (permissions.canEditSales || permissions.canDeleteSales) {
+            return <AdminSales />;
+          }
+          return <SellerDashboard />;
+        case 'inventory':
+          // Only if seller has canManageInventory permission
+          if (permissions.canManageInventory) {
+            return <AdminInventory />;
+          }
+          return <SellerDashboard />;
+        case 'expenses':
+          // Only if seller has canViewExpenses or canRecordExpenses permission
+          if (permissions.canViewExpenses || permissions.canRecordExpenses) {
+            return <AdminExpenses />;
+          }
+          return <SellerDashboard />;
+        case 'reports':
+          // Only if seller has canViewReports permission
+          if (permissions.canViewReports) {
+            return <AdminReports />;
+          }
+          return <SellerDashboard />;
+        case 'shops':
+          // Only if seller has canManageShops permission
+          if (permissions.canManageShops) {
+            return <AdminShops />;
+          }
+          return <SellerDashboard />;
+        case 'sellers':
+          // Only if seller has canManageSellers permission
+          if (permissions.canManageSellers) {
+            return <AdminSellers />;
+          }
+          return <SellerDashboard />;
         case 'my_sales':
           return <SellerSales />;
         case 'receipts':
@@ -102,9 +141,11 @@ const MainLayout: React.FC = () => {
     }
   };
 
-
   return (
-    <div id="omnibiz-pos-app" className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden select-none font-sans">
+    <div
+      id="omnibiz-pos-app"
+      className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden select-none font-sans"
+    >
       <Header onOpenDrawer={() => setIsMobileDrawerOpen(true)} />
       <div className="flex-1 flex overflow-hidden relative">
         <Sidebar />
