@@ -1,5 +1,5 @@
 import { db } from '../db/storage';
-import { User, UserStatus } from '../types';
+import { User, UserStatus, SellerPermissions } from '../types';
 import { generateUUID, hashPassword } from '../utils/crypto';
 
 export class SellerService {
@@ -30,7 +30,7 @@ export class SellerService {
   }
 
   /**
-   * Admin creates a new seller with assigned shops.
+   * Admin or Seller with canManageSellers permission creates a new seller.
    */
   public static async createSeller(
     params: {
@@ -40,11 +40,16 @@ export class SellerService {
       color?: string;
       status?: UserStatus;
       assignedShopIds?: string[];
+      permissions?: SellerPermissions;
     },
     currentUser: User
   ): Promise<{ success: boolean; seller?: User; error?: string }> {
-    if (currentUser.role !== 'ADMIN') {
-      return { success: false, error: 'Permission Denied: Only Admin can create seller accounts.' };
+    // FIX: Allow Admin OR Seller with canManageSellers permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canManageSellers) {
+      return {
+        success: false,
+        error: 'Permission Denied: Only Admin can create seller accounts.',
+      };
     }
 
     if (!params.name?.trim() || !params.username?.trim() || !params.password) {
@@ -67,15 +72,18 @@ export class SellerService {
       passwordHash,
       color: params.color || 'blue',
       status: params.status || 'ACTIVE',
-      assignedShopIds: params.assignedShopIds && params.assignedShopIds.length > 0 ? params.assignedShopIds : [],
+      assignedShopIds:
+        params.assignedShopIds && params.assignedShopIds.length > 0
+          ? params.assignedShopIds
+          : [],
       avatarUrl: null,
+      permissions: params.permissions || {},
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     db.saveUsers([...users, newSeller]);
 
-    // Sync payload includes passwordHash and avatarUrl for cloud
     db.enqueueSync({
       id: generateUUID(),
       operation: 'CREATE_SELLER',
@@ -91,6 +99,7 @@ export class SellerService {
         status: newSeller.status,
         assignedShopIds: newSeller.assignedShopIds,
         avatarUrl: newSeller.avatarUrl || null,
+        permissions: newSeller.permissions || {},
         createdAt: newSeller.createdAt,
         updatedAt: newSeller.updatedAt,
       },
@@ -113,8 +122,7 @@ export class SellerService {
   }
 
   /**
-   * Admin updates a seller (name, color, status, assignedShopIds, optional new password).
-   * Note: Permanent deletion is forbidden.
+   * Admin or Seller with canManageSellers permission updates a seller.
    */
   public static updateSeller(
     sellerId: string,
@@ -123,11 +131,16 @@ export class SellerService {
       color?: string;
       status?: UserStatus;
       assignedShopIds?: string[];
+      permissions?: SellerPermissions;
     },
     currentUser: User
   ): { success: boolean; seller?: User; error?: string } {
-    if (currentUser.role !== 'ADMIN') {
-      return { success: false, error: 'Permission Denied: Only Admin can manage seller profiles.' };
+    // FIX: Allow Admin OR Seller with canManageSellers permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canManageSellers) {
+      return {
+        success: false,
+        error: 'Permission Denied: Only Admin can manage seller profiles.',
+      };
     }
 
     const users = db.getUsers();
@@ -154,11 +167,14 @@ export class SellerService {
       seller.assignedShopIds = params.assignedShopIds;
     }
 
+    if (params.permissions !== undefined) {
+      seller.permissions = params.permissions;
+    }
+
     seller.updatedAt = new Date().toISOString();
     users[index] = seller;
     db.saveUsers(users);
 
-    // Sync payload includes passwordHash and avatarUrl to preserve them
     db.enqueueSync({
       id: generateUUID(),
       operation: 'UPDATE_SELLER',
@@ -174,6 +190,7 @@ export class SellerService {
         status: seller.status,
         assignedShopIds: seller.assignedShopIds,
         avatarUrl: seller.avatarUrl || null,
+        permissions: seller.permissions || {},
         createdAt: seller.createdAt,
         updatedAt: seller.updatedAt,
       },
@@ -204,6 +221,58 @@ export class SellerService {
   }
 
   /**
+   * Admin or Seller with canManageSellers permission deletes a seller.
+   */
+  public static deleteSeller(
+    sellerId: string,
+    currentUser: User
+  ): { success: boolean; error?: string } {
+    // FIX: Allow Admin OR Seller with canManageSellers permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canManageSellers) {
+      return {
+        success: false,
+        error: 'Permission Denied: Only Admin can delete sellers.',
+      };
+    }
+
+    const users = db.getUsers();
+    const seller = users.find(u => u.id === sellerId && u.role === 'SELLER');
+
+    if (!seller) {
+      return { success: false, error: 'Seller not found.' };
+    }
+
+    // Remove seller from users
+    const updatedUsers = users.filter(u => u.id !== sellerId);
+    db.saveUsers(updatedUsers);
+
+    // Sync to cloud
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'DELETE_SELLER',
+      entityType: 'SELLER',
+      entityId: sellerId,
+      payload: { id: sellerId },
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+
+    // Audit log
+    db.addAuditLog({
+      id: generateUUID(),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      action: 'DELETE_SELLER',
+      details: `Deleted seller account: ${seller.name} (@${seller.username})`,
+      entityType: 'SELLER',
+      entityId: sellerId,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { success: true };
+  }
+
+  /**
    * Seller or Admin updates the seller's account color.
    */
   public static updateSellerColor(
@@ -212,7 +281,10 @@ export class SellerService {
     currentUser: User
   ): { success: boolean; error?: string } {
     if (currentUser.role !== 'ADMIN' && currentUser.id !== sellerId) {
-      return { success: false, error: 'Permission Denied: You cannot modify another user color.' };
+      return {
+        success: false,
+        error: 'Permission Denied: You cannot modify another user color.',
+      };
     }
 
     const users = db.getUsers();
@@ -223,7 +295,6 @@ export class SellerService {
     user.updatedAt = new Date().toISOString();
     db.saveUsers(users);
 
-    // Sync color update to cloud (includes avatarUrl to preserve it)
     db.enqueueSync({
       id: generateUUID(),
       operation: 'UPDATE_SELLER',
@@ -239,6 +310,7 @@ export class SellerService {
         status: user.status,
         assignedShopIds: user.assignedShopIds,
         avatarUrl: user.avatarUrl || null,
+        permissions: user.permissions || {},
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
