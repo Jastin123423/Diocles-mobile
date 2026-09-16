@@ -5,7 +5,7 @@ import { generateUUID } from '../utils/crypto';
 export class InventoryService {
   /**
    * Adjust stock manually for count correction, damage, loss, or physical inventory.
-   * Admin only. Calculates loss value at purchase cost.
+   * Admin OR Seller with canManageInventory permission.
    */
   public static adjustStock(
     productId: string,
@@ -14,8 +14,12 @@ export class InventoryService {
     currentUser: User,
     movementType: MovementType = 'ADJUSTMENT'
   ): { success: boolean; error?: string; lossValue?: number } {
-    if (currentUser.role !== 'ADMIN') {
-      return { success: false, error: 'Permission Denied: Only Admin can adjust stock levels.' };
+    // FIX: Allow Admin OR Seller with canManageInventory permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canManageInventory) {
+      return {
+        success: false,
+        error: 'Permission Denied: You do not have permission to adjust stock levels.',
+      };
     }
 
     if (!reason?.trim()) {
@@ -64,7 +68,7 @@ export class InventoryService {
     };
     db.saveMovements([movement, ...db.getMovements()]);
 
-    // FIXED: Include ALL movement data in sync payload
+    // Include ALL movement data in sync payload
     db.enqueueSync({
       id: generateUUID(),
       operation: 'STOCK_ADJUSTMENT',
@@ -80,7 +84,7 @@ export class InventoryService {
       userId: currentUser.id,
       userName: currentUser.name,
       action: 'STOCK_ADJUSTMENT',
-      details: `Adjusted '${prod.name}' stock from ${prevQty} to ${newQuantity} (${movementType}: ${reason.trim()}, Cost Impact: $${costValue}) in [${shop?.name || 'Shop'}]`,
+      details: `Adjusted '${prod.name}' stock from ${prevQty} to ${newQuantity} (${movementType}: ${reason.trim()}, Cost Impact: ${costValue}) in [${shop?.name || 'Shop'}]`,
       entityType: 'INVENTORY',
       entityId: prod.id,
       timestamp: new Date().toISOString(),
@@ -91,7 +95,7 @@ export class InventoryService {
 
   /**
    * Receive fast stock-in.
-   * Admin only.
+   * Admin OR Seller with canManageInventory permission.
    */
   public static stockIn(
     productId: string,
@@ -99,8 +103,12 @@ export class InventoryService {
     reason: string,
     currentUser: User
   ): { success: boolean; error?: string } {
-    if (currentUser.role !== 'ADMIN') {
-      return { success: false, error: 'Permission Denied: Only Admin can perform stock-in.' };
+    // FIX: Allow Admin OR Seller with canManageInventory permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canManageInventory) {
+      return {
+        success: false,
+        error: 'Permission Denied: You do not have permission to perform stock-in.',
+      };
     }
 
     if (addQuantity <= 0) {
@@ -111,7 +119,12 @@ export class InventoryService {
     const prod = products.find(p => p.id === productId);
     if (!prod) return { success: false, error: 'Product not found.' };
 
-    return this.adjustStock(productId, prod.currentStock + addQuantity, reason || 'Quick Stock In', currentUser);
+    return this.adjustStock(
+      productId,
+      prod.currentStock + addQuantity,
+      reason || 'Quick Stock In',
+      currentUser
+    );
   }
 
   public static getMovements(productId?: string, shopId?: string): InventoryMovement[] {
@@ -162,7 +175,9 @@ export class InventoryService {
     const totalRetail = products.reduce((acc, p) => acc + p.currentStock * p.sellingPrice, 0);
     const totalUnits = products.reduce((acc, p) => acc + Math.max(0, p.currentStock), 0);
     const potentialProfit = totalRetail - totalCost;
-    const lowStockCount = products.filter(p => p.currentStock > 0 && p.currentStock <= p.minStock).length;
+    const lowStockCount = products.filter(
+      p => p.currentStock > 0 && p.currentStock <= p.minStock
+    ).length;
     const outOfStockCount = products.filter(p => p.currentStock <= 0).length;
 
     return {
