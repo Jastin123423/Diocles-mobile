@@ -50,13 +50,18 @@ export class CategoryService {
 
   /**
    * Create a new category assigned strictly to a specific shop
+   * Admin OR Seller with canEditProducts permission
    */
   public static createCategory(
     data: { name: string; shopId: string; icon?: string; color?: string },
     currentUser: User
   ): { success: boolean; category?: Category; error?: string } {
-    if (currentUser.role !== 'ADMIN') {
-      return { success: false, error: 'Permission Denied: Only Admin can create categories.' };
+    // FIX: Allow Admin OR Seller with canEditProducts permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canEditProducts) {
+      return {
+        success: false,
+        error: 'Permission Denied: You do not have permission to create categories.',
+      };
     }
 
     if (!data.name.trim()) {
@@ -64,7 +69,10 @@ export class CategoryService {
     }
 
     if (!data.shopId || !data.shopId.trim()) {
-      return { success: false, error: 'Every category must be assigned to a specific shop.' };
+      return {
+        success: false,
+        error: 'Every category must be assigned to a specific shop.',
+      };
     }
 
     const shops = db.getShops();
@@ -75,7 +83,9 @@ export class CategoryService {
 
     const categories = db.getCategories();
     const duplicateInShop = categories.some(
-      c => c.shopId === targetShop.id && c.name.toLowerCase() === data.name.trim().toLowerCase()
+      c =>
+        c.shopId === targetShop.id &&
+        c.name.toLowerCase() === data.name.trim().toLowerCase()
     );
 
     if (duplicateInShop) {
@@ -98,7 +108,7 @@ export class CategoryService {
 
     db.saveCategories([...categories, newCategory]);
 
-    // Enqueue sync for cloud
+    // Enqueue sync operation for category creation
     db.enqueueSync({
       id: generateUUID(),
       operation: 'CREATE_CATEGORY',
@@ -126,14 +136,25 @@ export class CategoryService {
 
   /**
    * Update an existing category
+   * Admin OR Seller with canEditProducts permission
    */
   public static updateCategory(
     id: string,
-    data: { name?: string; shopId?: string; icon?: string; color?: string; status?: 'ACTIVE' | 'INACTIVE' },
+    data: {
+      name?: string;
+      shopId?: string;
+      icon?: string;
+      color?: string;
+      status?: 'ACTIVE' | 'INACTIVE';
+    },
     currentUser: User
   ): { success: boolean; category?: Category; error?: string } {
-    if (currentUser.role !== 'ADMIN') {
-      return { success: false, error: 'Permission Denied: Only Admin can edit categories.' };
+    // FIX: Allow Admin OR Seller with canEditProducts permission
+    if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canEditProducts) {
+      return {
+        success: false,
+        error: 'Permission Denied: You do not have permission to edit categories.',
+      };
     }
 
     const categories = db.getCategories();
@@ -151,7 +172,10 @@ export class CategoryService {
     }
 
     const duplicate = categories.some(
-      c => c.id !== id && c.shopId === targetShopId && c.name.toLowerCase() === targetName.toLowerCase()
+      c =>
+        c.id !== id &&
+        c.shopId === targetShopId &&
+        c.name.toLowerCase() === targetName.toLowerCase()
     );
 
     if (duplicate) {
@@ -159,7 +183,9 @@ export class CategoryService {
       const shop = shops.find(s => s.id === targetShopId);
       return {
         success: false,
-        error: `Another category named '${targetName}' already exists in ${shop ? shop.name : 'this shop'}.`,
+        error: `Another category named '${targetName}' already exists in ${
+          shop ? shop.name : 'this shop'
+        }.`,
       };
     }
 
@@ -174,7 +200,7 @@ export class CategoryService {
     categories[index] = updatedCategory;
     db.saveCategories([...categories]);
 
-    // Enqueue sync for cloud
+    // Enqueue sync operation for category update
     db.enqueueSync({
       id: generateUUID(),
       operation: 'UPDATE_CATEGORY',
@@ -193,7 +219,9 @@ export class CategoryService {
       userId: currentUser.id,
       userName: currentUser.name,
       action: 'UPDATE_CATEGORY',
-      details: `Updated category '${updatedCategory.name}' for shop '${shop?.name || updatedCategory.shopId}' (Status: ${updatedCategory.status})`,
+      details: `Updated category '${updatedCategory.name}' for shop '${
+        shop?.name || updatedCategory.shopId
+      }' (Status: ${updatedCategory.status})`,
       entityType: 'SETTINGS',
       entityId: updatedCategory.id,
       shopId: updatedCategory.shopId,
