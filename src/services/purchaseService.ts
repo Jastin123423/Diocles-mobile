@@ -12,8 +12,7 @@ export interface PurchaseItemInput {
 export class PurchaseService {
   /**
    * Record a new purchase order / stock-in for a specific shop.
-   * Automatically increments product stock in that shop's inventory.
-   * Admin only.
+   * Uses Moving Average Cost for inventory valuation.
    */
   public static recordPurchase(
     params: {
@@ -28,12 +27,15 @@ export class PurchaseService {
     currentUser: User
   ): { success: boolean; purchase?: Purchase; error?: string } {
     const targetShopId = params.shopId || db.getShops()[0]?.id || 'shop-1';
-    
+
     // Check role and shop assignment permissions
     if (currentUser.role === 'SELLER') {
       const assigned = currentUser.assignedShopIds || [];
       if (assigned.length > 0 && !assigned.includes(targetShopId)) {
-        return { success: false, error: 'Permission Denied: You are not assigned to record purchases for this shop.' };
+        return {
+          success: false,
+          error: 'Permission Denied: You are not assigned to record purchases for this shop.',
+        };
       }
     }
     const shop = db.getShops().find(s => s.id === targetShopId);
@@ -41,32 +43,37 @@ export class PurchaseService {
       return { success: false, error: 'Selected shop does not exist.' };
     }
 
-    if (!params.supplierName?.trim()) {
-      return { success: false, error: 'Supplier name is required.' };
-    }
-
     if (!params.items || params.items.length === 0) {
       return { success: false, error: 'Please add at least one product item.' };
     }
 
-    const products = db.getProducts();
+    const products = [...db.getProducts()];
     const purchaseId = generateUUID();
     const purchaseNumber = generatePurchaseNumber();
     const purchaseItems: PurchaseItem[] = [];
     let totalAmount = 0;
 
     for (const itemInput of params.items) {
-      const prod = products.find(p => p.id === itemInput.productId && (p.shopId === targetShopId || !p.shopId));
-      if (!prod) {
-        return { success: false, error: `Product not found in ${shop.name} (ID: ${itemInput.productId})` };
+      const prodIndex = products.findIndex(p => p.id === itemInput.productId);
+
+      if (prodIndex === -1) {
+        return { success: false, error: `Product not found (ID: ${itemInput.productId})` };
       }
 
+      const prod = products[prodIndex];
+
       if (itemInput.quantity <= 0) {
-        return { success: false, error: `Invalid quantity for ${prod.name}. Must be greater than 0.` };
+        return {
+          success: false,
+          error: `Invalid quantity for ${prod.name}. Must be greater than 0.`,
+        };
       }
 
       if (itemInput.unitCost < 0) {
-        return { success: false, error: `Unit cost for ${prod.name} cannot be negative.` };
+        return {
+          success: false,
+          error: `Unit cost for ${prod.name} cannot be negative.`,
+        };
       }
 
       const itemTotal = itemInput.quantity * itemInput.unitCost;
@@ -81,14 +88,31 @@ export class PurchaseService {
         total: itemTotal,
       });
 
-      // Update product current stock and purchase price
-      const prevStock = prod.currentStock;
-      const newStock = prevStock + itemInput.quantity;
-      prod.currentStock = newStock;
-      prod.purchasePrice = itemInput.unitCost;
-      prod.updatedAt = new Date().toISOString();
+      // MOVING AVERAGE COST CALCULATION
+      const currentStock = prod.currentStock || 0;
+      const currentPrice = prod.purchasePrice || 0;
+      const currentTotalCost = currentStock * currentPrice;
+      const newTotalCost = itemInput.quantity * itemInput.unitCost;
+      const newTotalStock = currentStock + itemInput.quantity;
 
-      // Record inventory movement
+      // Calculate weighted average cost
+      const newAveragePrice =
+        newTotalStock > 0
+          ? (currentTotalCost + newTotalCost) / newTotalStock
+          : itemInput.unitCost;
+
+      const prevStock = currentStock;
+      const newStock = newTotalStock;
+
+      // Update product with new stock and AVERAGE cost (not latest cost)
+      products[prodIndex] = {
+        ...prod,
+        currentStock: newStock,
+        purchasePrice: Number(newAveragePrice.toFixed(2)),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Record inventory movement with ACTUAL purchase price
       const movement = {
         id: generateUUID(),
         shopId: targetShopId,
@@ -99,7 +123,10 @@ export class PurchaseService {
         changeQty: itemInput.quantity,
         newQty: newStock,
         type: 'PURCHASE' as const,
-        reason: `PO ${purchaseNumber} from ${params.supplierName.trim()} [${shop.name}]`,
+        reason: `PO ${purchaseNumber} from ${
+          params.supplierName?.trim() || 'Walk-in Supplier'
+        } [${shop.name}] @ ${itemInput.unitCost}/unit (Avg: ${newAveragePrice.toFixed(2)})`,
+        costValue: itemTotal,
         userId: currentUser.id,
         userName: currentUser.name,
         createdAt: new Date().toISOString(),
@@ -107,14 +134,17 @@ export class PurchaseService {
       db.saveMovements([movement, ...db.getMovements()]);
     }
 
-    db.saveProducts([...products]);
+    // Save updated products with new average costs
+    db.saveProducts(products);
+
+    const finalSupplierName = params.supplierName?.trim() || 'Walk-in Supplier';
 
     const newPurchase: Purchase = {
       id: purchaseId,
       shopId: targetShopId,
       shopName: shop.name,
       purchaseNumber,
-      supplierName: params.supplierName.trim(),
+      supplierName: finalSupplierName,
       date: params.date || new Date().toISOString().slice(0, 10),
       items: purchaseItems,
       totalAmount,
@@ -143,7 +173,7 @@ export class PurchaseService {
       userId: currentUser.id,
       userName: currentUser.name,
       action: 'RECORD_PURCHASE',
-      details: `Recorded purchase ${purchaseNumber} from ${newPurchase.supplierName} for [${shop.name}] (${db.getSettings().currencySymbol} ${newPurchase.totalAmount.toLocaleString()})`,
+      details: `Recorded purchase ${purchaseNumber} from ${finalSupplierName} for [${shop.name}]`,
       entityType: 'PURCHASE',
       entityId: purchaseId,
       timestamp: new Date().toISOString(),
@@ -168,8 +198,208 @@ export class PurchaseService {
   }
 
   /**
+   * Update an existing purchase.
+   * Can update metadata only OR items (which triggers stock recalculation).
+   */
+  public static updatePurchase(
+    purchaseId: string,
+    updates: {
+      supplierName?: string;
+      invoiceNumber?: string;
+      paymentStatus?: PaymentStatus;
+      notes?: string;
+      items?: PurchaseItemInput[];
+    },
+    currentUser: User
+  ): { success: boolean; purchase?: Purchase; error?: string } {
+    const purchases = db.getPurchases();
+    const index = purchases.findIndex(p => p.id === purchaseId);
+
+    if (index === -1) {
+      return { success: false, error: 'Purchase not found.' };
+    }
+
+    const current = purchases[index];
+
+    // Check permissions
+    if (currentUser.role !== 'ADMIN' && current.createdByUserId !== currentUser.id) {
+      return {
+        success: false,
+        error: 'Permission Denied: You can only update purchases you created.',
+      };
+    }
+
+    // If items are being updated, recalculate stock
+    if (updates.items && updates.items.length > 0) {
+      const products = [...db.getProducts()];
+
+      // First, reverse the OLD purchase stock (subtract old quantities)
+      for (const oldItem of current.items) {
+        const prodIndex = products.findIndex(p => p.id === oldItem.productId);
+        if (prodIndex !== -1) {
+          products[prodIndex] = {
+            ...products[prodIndex],
+            currentStock: Math.max(
+              0,
+              (products[prodIndex].currentStock || 0) - oldItem.quantity
+            ),
+            updatedAt: new Date().toISOString(),
+          };
+        }
+      }
+
+      // Then apply NEW quantities (add new stock with average cost)
+      const purchaseItems: PurchaseItem[] = [];
+      let totalAmount = 0;
+
+      for (const itemInput of updates.items) {
+        const prodIndex = products.findIndex(p => p.id === itemInput.productId);
+        if (prodIndex === -1) {
+          return { success: false, error: `Product not found (ID: ${itemInput.productId})` };
+        }
+
+        if (itemInput.quantity <= 0) {
+          return { success: false, error: `Invalid quantity. Must be greater than 0.` };
+        }
+
+        if (itemInput.unitCost < 0) {
+          return { success: false, error: `Unit cost cannot be negative.` };
+        }
+
+        const itemTotal = itemInput.quantity * itemInput.unitCost;
+        totalAmount += itemTotal;
+
+        purchaseItems.push({
+          id: generateUUID(),
+          productId: itemInput.productId,
+          productName: products[prodIndex].name,
+          quantity: itemInput.quantity,
+          unitCost: itemInput.unitCost,
+          total: itemTotal,
+        });
+
+        // Calculate new average cost
+        const currentStock = products[prodIndex].currentStock || 0;
+        const currentPrice = products[prodIndex].purchasePrice || 0;
+        const currentTotalCost = currentStock * currentPrice;
+        const newTotalCost = itemInput.quantity * itemInput.unitCost;
+        const newTotalStock = currentStock + itemInput.quantity;
+        const newAveragePrice =
+          newTotalStock > 0
+            ? (currentTotalCost + newTotalCost) / newTotalStock
+            : itemInput.unitCost;
+
+        // Add new stock with average cost
+        products[prodIndex] = {
+          ...products[prodIndex],
+          currentStock: newTotalStock,
+          purchasePrice: Number(newAveragePrice.toFixed(2)),
+          updatedAt: new Date().toISOString(),
+        };
+
+        // Record inventory movement
+        const movement = {
+          id: generateUUID(),
+          shopId: current.shopId,
+          shopName: current.shopName,
+          productId: itemInput.productId,
+          productName: products[prodIndex].name,
+          previousQty: currentStock,
+          changeQty: itemInput.quantity,
+          newQty: newTotalStock,
+          type: 'PURCHASE_EDIT' as const,
+          reason: `Corrected PO ${current.purchaseNumber} - quantity adjusted`,
+          costValue: itemTotal,
+          userId: currentUser.id,
+          userName: currentUser.name,
+          createdAt: new Date().toISOString(),
+        };
+        db.saveMovements([movement, ...db.getMovements()]);
+      }
+
+      // Save updated products
+      db.saveProducts(products);
+
+      // Update purchase
+      const updatedPurchase: Purchase = {
+        ...current,
+        supplierName: updates.supplierName?.trim() || current.supplierName,
+        invoiceNumber: updates.invoiceNumber?.trim() || undefined,
+        paymentStatus: updates.paymentStatus || current.paymentStatus,
+        notes: updates.notes?.trim() || undefined,
+        items: purchaseItems,
+        totalAmount,
+        updatedAt: new Date().toISOString(),
+      };
+
+      purchases[index] = updatedPurchase;
+      db.savePurchases(purchases);
+
+      // Queue sync
+      db.enqueueSync({
+        id: generateUUID(),
+        operation: 'UPDATE_PURCHASE',
+        entityType: 'PURCHASE',
+        entityId: purchaseId,
+        payload: updatedPurchase,
+        status: 'PENDING',
+        createdAt: new Date().toISOString(),
+      });
+
+      // Audit log
+      db.addAuditLog({
+        id: generateUUID(),
+        userId: currentUser.id,
+        userName: currentUser.name,
+        action: 'UPDATE_PURCHASE_ITEMS',
+        details: `Updated purchase items for ${current.purchaseNumber}. Stock recalculated.`,
+        entityType: 'PURCHASE',
+        entityId: purchaseId,
+        timestamp: new Date().toISOString(),
+      });
+
+      return { success: true, purchase: updatedPurchase };
+    }
+
+    // If only basic info updated (no items)
+    const updatedPurchase: Purchase = {
+      ...current,
+      supplierName: updates.supplierName?.trim() || current.supplierName,
+      invoiceNumber: updates.invoiceNumber?.trim() || undefined,
+      paymentStatus: updates.paymentStatus || current.paymentStatus,
+      notes: updates.notes?.trim() || undefined,
+      updatedAt: new Date().toISOString(),
+    };
+
+    purchases[index] = updatedPurchase;
+    db.savePurchases(purchases);
+
+    db.enqueueSync({
+      id: generateUUID(),
+      operation: 'UPDATE_PURCHASE',
+      entityType: 'PURCHASE',
+      entityId: purchaseId,
+      payload: updatedPurchase,
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+
+    db.addAuditLog({
+      id: generateUUID(),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      action: 'UPDATE_PURCHASE',
+      details: `Updated purchase ${current.purchaseNumber} metadata`,
+      entityType: 'PURCHASE',
+      entityId: purchaseId,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { success: true, purchase: updatedPurchase };
+  }
+
+  /**
    * Get purchases filtered by shop, supplier, date.
-   * Admin sees all purchases, Seller sees only their own purchases.
    */
   public static getPurchases(
     options?: {
@@ -180,14 +410,9 @@ export class PurchaseService {
       startDate?: string;
       endDate?: string;
     },
-    currentUser?: User
+    _currentUser?: User
   ): Purchase[] {
     let purchases = db.getPurchases();
-
-    // Filter by user role
-    if (currentUser && currentUser.role === 'SELLER') {
-      purchases = purchases.filter(p => p.createdByUserId === currentUser.id);
-    }
 
     if (options?.shopId && options.shopId !== 'ALL') {
       purchases = purchases.filter(p => p.shopId === options.shopId);
