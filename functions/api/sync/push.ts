@@ -1,8 +1,9 @@
+// functions/api/sync/push.ts
 export async function onRequestOptions() {
   return new Response(null, {
     headers: {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS, GET',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Device-ID',
       'Access-Control-Max-Age': '86400',
     },
@@ -11,8 +12,8 @@ export async function onRequestOptions() {
 
 export async function onRequestGet() {
   return new Response(JSON.stringify({ 
+    success: true,
     message: 'Sync push endpoint. Use POST method.',
-    example: { deviceId: 'test', operations: [] }
   }), {
     headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
   });
@@ -23,6 +24,8 @@ export async function onRequestPost(context: any) {
   
   try {
     const { deviceId, operations } = await request.json();
+    
+    console.log('[Push] Received operations:', operations?.length || 0);
     
     if (!operations || !Array.isArray(operations)) {
       return new Response(JSON.stringify({ error: 'Invalid sync payload' }), {
@@ -35,11 +38,15 @@ export async function onRequestPost(context: any) {
     const errors = [];
 
     for (const op of operations) {
+      console.log('[Push] Processing:', op.operation, 'ID:', op.entityId);
+      
       try {
         const result = await processOperation(env.DB, op);
         results.push({ id: op.id, success: true, ...result });
+        console.log('[Push] Success:', op.operation);
       } catch (error: any) {
-        errors.push({ id: op.id, error: error.message });
+        console.error('[Push] Error:', op.operation, error.message);
+        errors.push({ id: op.id, operation: op.operation, error: error.message });
       }
     }
 
@@ -53,6 +60,7 @@ export async function onRequestPost(context: any) {
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
     });
   } catch (error: any) {
+    console.error('[Push] Request error:', error);
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
@@ -70,10 +78,18 @@ async function processOperation(db: any, op: any) {
       await upsertShop(db, payload);
       break;
     
+    case 'DELETE_SHOP':
+      await deleteShop(db, payload);
+      break;
+    
     case 'CREATE_PRODUCT':
     case 'UPDATE_PRODUCT':
     case 'TOGGLE_PRODUCT_STATUS':
       await upsertProduct(db, payload);
+      break;
+    
+    case 'DELETE_PRODUCT':
+      await deleteProduct(db, payload);
       break;
     
     case 'CREATE_CATEGORY':
@@ -85,12 +101,20 @@ async function processOperation(db: any, op: any) {
       await createSale(db, payload);
       break;
     
+    case 'UPDATE_SALE':
+      await updateSale(db, payload);
+      break;
+    
     case 'VOID_SALE':
       await voidSale(db, payload);
       break;
     
     case 'CREATE_PURCHASE':
       await createPurchase(db, payload);
+      break;
+    
+    case 'UPDATE_PURCHASE':
+      await updatePurchase(db, payload);
       break;
     
     case 'CREATE_EXPENSE':
@@ -100,6 +124,10 @@ async function processOperation(db: any, op: any) {
     case 'CREATE_SELLER':
     case 'UPDATE_SELLER':
       await upsertUser(db, payload);
+      break;
+    
+    case 'DELETE_SELLER':
+      await deleteSeller(db, payload);
       break;
     
     case 'STOCK_ADJUSTMENT':
@@ -118,11 +146,53 @@ async function processOperation(db: any, op: any) {
       await updateDebt(db, payload);
       break;
     
+    case 'DELETE_DEBT':
+      await deleteDebt(db, payload);
+      break;
+    
+    case 'CREATE_SALE_EDIT_REQUEST':
+      await createSaleEditRequest(db, payload);
+      break;
+    
+    case 'REVIEW_SALE_EDIT_REQUEST':
+      await reviewSaleEditRequest(db, payload);
+      break;
+    
     default:
       throw new Error(`Unknown operation: ${operation}`);
   }
 
   return { entityType: op.entityType, entityId: op.entityId };
+}
+
+async function deleteShop(db: any, payload: any) {
+  await db.prepare('DELETE FROM product_images WHERE product_id IN (SELECT id FROM products WHERE shop_id = ?)').bind(payload.id).run();
+  await db.prepare('DELETE FROM inventory_movements WHERE shop_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM purchase_items WHERE purchase_id IN (SELECT id FROM purchases WHERE shop_id = ?)').bind(payload.id).run();
+  await db.prepare('DELETE FROM purchases WHERE shop_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE shop_id = ?)').bind(payload.id).run();
+  await db.prepare('DELETE FROM sales WHERE shop_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM products WHERE shop_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM categories WHERE shop_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM expenses WHERE shop_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM shops WHERE id = ?').bind(payload.id).run();
+}
+
+async function deleteProduct(db: any, payload: any) {
+  await db.prepare('DELETE FROM product_images WHERE product_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM inventory_movements WHERE product_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM purchase_items WHERE product_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM sale_items WHERE product_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM products WHERE id = ?').bind(payload.id).run();
+}
+
+async function deleteSeller(db: any, payload: any) {
+  await db.prepare('DELETE FROM users WHERE id = ? AND role = ?').bind(payload.id, 'SELLER').run();
+}
+
+async function deleteDebt(db: any, payload: any) {
+  await db.prepare('DELETE FROM debt_payments WHERE debt_id = ?').bind(payload.id).run();
+  await db.prepare('DELETE FROM debts WHERE id = ?').bind(payload.id).run();
 }
 
 async function upsertShop(db: any, shop: any) {
@@ -178,7 +248,6 @@ async function upsertProduct(db: any, product: any) {
     product.createdAt || new Date().toISOString(), product.updatedAt || new Date().toISOString()
   ).run();
 
-  // Save product images to product_images table
   if (product.images && Array.isArray(product.images) && product.images.length > 0) {
     for (let i = 0; i < product.images.length; i++) {
       const img = product.images[i];
@@ -267,20 +336,170 @@ async function createSale(db: any, sale: any) {
       item.productId, item.productName, item.sku, item.unitPrice || 0,
       item.purchasePrice || 0, item.quantity || 0, item.discount || 0, item.total || 0
     ).run();
+
+    await db.prepare(`
+      UPDATE products 
+      SET current_stock = current_stock - ?,
+          updated_at = ?
+      WHERE id = ?
+    `).bind(
+      item.quantity || 0,
+      new Date().toISOString(),
+      item.productId
+    ).run();
   }
 }
 
+async function updateSale(db: any, sale: any) {
+  console.log('[updateSale] Updating sale:', sale.id);
+  console.log('[updateSale] Items:', sale.items?.length);
+  
+  // 1. Get old sale items
+  const oldSaleItems = await db.prepare(
+    'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?'
+  ).bind(sale.id).all();
+  console.log('[updateSale] Old items found:', oldSaleItems.results?.length);
+
+  // 2. Reverse old stock
+  if (oldSaleItems.results) {
+    for (const oldItem of oldSaleItems.results) {
+      console.log('[updateSale] Reversing stock for:', oldItem.product_id, 'qty:', oldItem.quantity);
+      
+      await db.prepare(`
+        UPDATE products 
+        SET current_stock = current_stock + ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        oldItem.quantity || 0,
+        new Date().toISOString(),
+        oldItem.product_id
+      ).run();
+    }
+  }
+
+  // 3. Delete old sale items
+  await db.prepare('DELETE FROM sale_items WHERE sale_id = ?').bind(sale.id).run();
+  console.log('[updateSale] Old items deleted');
+
+  // 4. Update sale metadata
+  await db.prepare(`
+    UPDATE sales SET
+      subtotal = ?,
+      discount = ?,
+      total = ?,
+      cost_of_goods = ?,
+      gross_profit = ?,
+      amount_received = ?,
+      change = ?,
+      notes = ?
+    WHERE id = ?
+  `).bind(
+    sale.subtotal || 0,
+    sale.discount || 0,
+    sale.total || 0,
+    sale.costOfGoods || 0,
+    sale.grossProfit || 0,
+    sale.amountReceived || 0,
+    sale.change || 0,
+    sale.notes || null,
+    sale.id
+  ).run();
+  console.log('[updateSale] Sale metadata updated');
+
+  // 5. Insert new sale items with ON CONFLICT DO NOTHING
+  for (const item of (sale.items || [])) {
+    console.log('[updateSale] Inserting item:', item.id, 'product:', item.productId, 'qty:', item.quantity);
+    
+    await db.prepare(`
+      INSERT INTO sale_items (
+        id, sale_id, shop_id, product_id, product_name, sku,
+        unit_price, purchase_price, quantity, discount, total
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING
+    `).bind(
+      item.id || crypto.randomUUID(), 
+      sale.id, 
+      item.shopId || sale.shopId,
+      item.productId, 
+      item.productName, 
+      item.sku, 
+      item.unitPrice || 0,
+      item.purchasePrice || 0, 
+      item.quantity || 0, 
+      item.discount || 0, 
+      item.total || 0
+    ).run();
+
+    // 6. Subtract new stock
+    console.log('[updateSale] Subtracting stock for:', item.productId, 'qty:', item.quantity);
+    
+    const product = await db.prepare(
+      'SELECT current_stock FROM products WHERE id = ?'
+    ).bind(item.productId).first();
+    
+    if (product) {
+      console.log('[updateSale] Stock before:', product.current_stock);
+      
+      await db.prepare(`
+        UPDATE products 
+        SET current_stock = current_stock - ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        item.quantity || 0,
+        new Date().toISOString(),
+        item.productId
+      ).run();
+      
+      const afterProduct = await db.prepare(
+        'SELECT current_stock FROM products WHERE id = ?'
+      ).bind(item.productId).first();
+      
+      console.log('[updateSale] Stock after:', afterProduct?.current_stock);
+    } else {
+      console.log('[updateSale] Product NOT found:', item.productId);
+    }
+  }
+  
+  console.log('[updateSale] Completed for sale:', sale.id);
+}
+
 async function voidSale(db: any, payload: any) {
+  const saleId = payload.saleId || payload.id;
+  
+  const saleItems = await db.prepare(
+    'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?'
+  ).bind(saleId).all();
+  
+  if (saleItems.results) {
+    for (const item of saleItems.results) {
+      await db.prepare(`
+        UPDATE products 
+        SET current_stock = current_stock + ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        item.quantity || 0,
+        new Date().toISOString(),
+        item.product_id
+      ).run();
+    }
+  }
+  
   await db.prepare(`
     UPDATE sales SET status = 'VOIDED', void_reason = ?, voided_at = ?, voided_by = ?
     WHERE id = ?
   `).bind(
     payload.voidReason || '', payload.voidedAt || new Date().toISOString(),
-    payload.voidedBy || '', payload.saleId || payload.id
+    payload.voidedBy || '', saleId
   ).run();
 }
 
 async function createPurchase(db: any, purchase: any) {
+  console.log('[createPurchase] Creating purchase:', purchase.id);
+  
   await db.prepare(`
     INSERT INTO purchases (
       id, purchase_number, shop_id, shop_name, supplier_name, date,
@@ -306,7 +525,210 @@ async function createPurchase(db: any, purchase: any) {
       item.id || crypto.randomUUID(), purchase.id, item.productId, item.productName,
       item.quantity || 0, item.unitCost || 0, item.total || 0
     ).run();
+
+    const product = await db.prepare(
+      'SELECT current_stock, purchase_price FROM products WHERE id = ?'
+    ).bind(item.productId).first();
+
+    if (product) {
+      const currentStock = Number(product.current_stock) || 0;
+      const currentPrice = Number(product.purchase_price) || 0;
+      const currentTotalCost = currentStock * currentPrice;
+      const newPurchaseQty = Number(item.quantity) || 0;
+      const newUnitCost = Number(item.unitCost) || 0;
+      const newTotalCost = newPurchaseQty * newUnitCost;
+      const newTotalStock = currentStock + newPurchaseQty;
+      const newAveragePrice = newTotalStock > 0 
+        ? (currentTotalCost + newTotalCost) / newTotalStock 
+        : newUnitCost;
+
+      await db.prepare(`
+        UPDATE products 
+        SET current_stock = ?, 
+            purchase_price = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        newTotalStock,
+        Number(newAveragePrice.toFixed(2)),
+        new Date().toISOString(),
+        item.productId
+      ).run();
+
+      await db.prepare(`
+        INSERT INTO inventory_movements (
+          id, shop_id, shop_name, product_id, product_name,
+          previous_qty, change_qty, new_qty, type, reason, cost_value,
+          reference_id, user_id, user_name, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO NOTHING
+      `).bind(
+        crypto.randomUUID(),
+        purchase.shopId,
+        purchase.shopName || null,
+        item.productId,
+        item.productName,
+        currentStock,
+        newPurchaseQty,
+        newTotalStock,
+        'PURCHASE',
+        `Purchase from ${purchase.supplierName}`,
+        newUnitCost,
+        purchase.id,
+        purchase.createdByUserId,
+        purchase.createdByName,
+        purchase.createdAt || new Date().toISOString()
+      ).run();
+    }
   }
+  
+  console.log('[createPurchase] Purchase created:', purchase.id);
+}
+
+async function updatePurchase(db: any, purchase: any) {
+  const oldPurchase = await db.prepare(
+    'SELECT * FROM purchase_items WHERE purchase_id = ?'
+  ).bind(purchase.id).all();
+
+  if (oldPurchase.results) {
+    for (const oldItem of oldPurchase.results) {
+      await db.prepare(`
+        UPDATE products 
+        SET current_stock = current_stock - ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        oldItem.quantity || 0, 
+        new Date().toISOString(), 
+        oldItem.product_id
+      ).run();
+    }
+  }
+
+  await db.prepare('DELETE FROM purchase_items WHERE purchase_id = ?').bind(purchase.id).run();
+
+  await db.prepare(`
+    UPDATE purchases SET
+      supplier_name = ?,
+      invoice_number = ?,
+      payment_status = ?,
+      notes = ?,
+      total_amount = ?
+    WHERE id = ?
+  `).bind(
+    purchase.supplierName,
+    purchase.invoiceNumber || null,
+    purchase.paymentStatus || 'PAID',
+    purchase.notes || null,
+    purchase.totalAmount || 0,
+    purchase.id
+  ).run();
+
+  for (const item of (purchase.items || [])) {
+    await db.prepare(`
+      INSERT INTO purchase_items (id, purchase_id, product_id, product_name, quantity, unit_cost, total)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING
+    `).bind(
+      item.id || crypto.randomUUID(), 
+      purchase.id, 
+      item.productId, 
+      item.productName,
+      item.quantity || 0, 
+      item.unitCost || 0, 
+      item.total || 0
+    ).run();
+
+    const product = await db.prepare(
+      'SELECT current_stock, purchase_price FROM products WHERE id = ?'
+    ).bind(item.productId).first();
+
+    if (product) {
+      const currentStock = Number(product.current_stock) || 0;
+      const currentPrice = Number(product.purchase_price) || 0;
+      const currentTotalCost = currentStock * currentPrice;
+      const newPurchaseQty = Number(item.quantity) || 0;
+      const newUnitCost = Number(item.unitCost) || 0;
+      const newTotalCost = newPurchaseQty * newUnitCost;
+      const newTotalStock = currentStock + newPurchaseQty;
+      const newAveragePrice = newTotalStock > 0 
+        ? (currentTotalCost + newTotalCost) / newTotalStock 
+        : newUnitCost;
+
+      await db.prepare(`
+        UPDATE products 
+        SET current_stock = ?,
+            purchase_price = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        newTotalStock,
+        Number(newAveragePrice.toFixed(2)),
+        new Date().toISOString(),
+        item.productId
+      ).run();
+    }
+  }
+}
+
+async function createSaleEditRequest(db: any, request: any) {
+  console.log('[createSaleEditRequest] Creating:', request.id);
+  
+  await db.prepare(`
+    INSERT INTO sale_edit_requests (
+      id, sale_id, requested_by_user_id, requested_by_name,
+      original_values, new_values, reason, status,
+      reviewed_by_user_id, reviewed_by_name, review_note,
+      created_at, reviewed_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+  `).bind(
+    request.id,
+    request.saleId,
+    request.requestedByUserId,
+    request.requestedByName,
+    JSON.stringify(request.originalValues),
+    JSON.stringify(request.newValues),
+    request.reason,
+    request.status || 'PENDING',
+    request.reviewedByUserId || null,
+    request.reviewedByName || null,
+    request.reviewNote || null,
+    request.createdAt || new Date().toISOString(),
+    request.reviewedAt || null
+  ).run();
+  
+  console.log('[createSaleEditRequest] Created:', request.id);
+}
+
+async function reviewSaleEditRequest(db: any, request: any) {
+  console.log('[reviewSaleEditRequest] Reviewing:', request.id, 'status:', request.status);
+  
+  if (!request.id) {
+    console.error('[reviewSaleEditRequest] ERROR: No ID in request');
+    return;
+  }
+  
+  await db.prepare(`
+    UPDATE sale_edit_requests SET
+      status = ?,
+      reviewed_by_user_id = ?,
+      reviewed_by_name = ?,
+      review_note = ?,
+      reviewed_at = ?
+    WHERE id = ?
+  `).bind(
+    request.status || 'PENDING',
+    request.reviewedByUserId || null,
+    request.reviewedByName || null,
+    request.reviewNote || null,
+    request.reviewedAt || new Date().toISOString(),
+    request.id
+  ).run();
+  
+  console.log('[reviewSaleEditRequest] Updated:', request.id, 'to status:', request.status);
 }
 
 async function createExpense(db: any, expense: any) {
@@ -332,9 +754,9 @@ async function upsertUser(db: any, user: any) {
   await db.prepare(`
     INSERT INTO users (
       id, username, name, role, password_hash, color, status,
-      assigned_shop_ids, avatar_url, created_at, updated_at
+      assigned_shop_ids, avatar_url, permissions, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       username = excluded.username,
       name = excluded.name,
@@ -344,6 +766,7 @@ async function upsertUser(db: any, user: any) {
       status = excluded.status,
       assigned_shop_ids = excluded.assigned_shop_ids,
       avatar_url = excluded.avatar_url,
+      permissions = excluded.permissions,
       updated_at = excluded.updated_at
   `).bind(
     user.id, 
@@ -355,6 +778,7 @@ async function upsertUser(db: any, user: any) {
     user.status || 'ACTIVE',
     JSON.stringify(user.assignedShopIds || []),
     user.avatarUrl || user.avatar_url || null,
+    JSON.stringify(user.permissions || {}),
     user.createdAt || new Date().toISOString(), 
     user.updatedAt || new Date().toISOString()
   ).run();
