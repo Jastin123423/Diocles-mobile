@@ -307,20 +307,23 @@ async function upsertCategory(db: any, category: any) {
 }
 
 async function createSale(db: any, sale: any) {
+  const now = new Date().toISOString();
+  
   await db.prepare(`
     INSERT INTO sales (
       id, receipt_number, shop_id, shop_name, seller_id, seller_name,
       subtotal, discount, tax, total, cost_of_goods, gross_profit,
-      payment_method, amount_received, change, status, notes, created_at
+      payment_method, amount_received, change, status, notes, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `).bind(
     sale.id, sale.receiptNumber, sale.shopId, sale.shopName || null,
     sale.sellerId, sale.sellerName, sale.subtotal || 0, sale.discount || 0,
     sale.tax || 0, sale.total || 0, sale.costOfGoods || 0, sale.grossProfit || 0,
     sale.paymentMethod, sale.amountReceived || 0, sale.change || 0,
-    sale.status || 'COMPLETED', sale.notes || null, sale.createdAt || new Date().toISOString()
+    sale.status || 'COMPLETED', sale.notes || null,
+    sale.createdAt || now, now
   ).run();
 
   for (const item of (sale.items || [])) {
@@ -382,7 +385,7 @@ async function updateSale(db: any, sale: any) {
   await db.prepare('DELETE FROM sale_items WHERE sale_id = ?').bind(sale.id).run();
   console.log('[updateSale] Old items deleted');
 
-  // 4. Update sale metadata
+  // 4. Update sale metadata — WITH updated_at
   await db.prepare(`
     UPDATE sales SET
       subtotal = ?,
@@ -392,7 +395,8 @@ async function updateSale(db: any, sale: any) {
       gross_profit = ?,
       amount_received = ?,
       change = ?,
-      notes = ?
+      notes = ?,
+      updated_at = ?
     WHERE id = ?
   `).bind(
     sale.subtotal || 0,
@@ -403,6 +407,7 @@ async function updateSale(db: any, sale: any) {
     sale.amountReceived || 0,
     sale.change || 0,
     sale.notes || null,
+    new Date().toISOString(),
     sale.id
   ).run();
   console.log('[updateSale] Sale metadata updated');
@@ -489,11 +494,19 @@ async function voidSale(db: any, payload: any) {
   }
   
   await db.prepare(`
-    UPDATE sales SET status = 'VOIDED', void_reason = ?, voided_at = ?, voided_by = ?
+    UPDATE sales SET
+      status = 'VOIDED',
+      void_reason = ?,
+      voided_at = ?,
+      voided_by = ?,
+      updated_at = ?
     WHERE id = ?
   `).bind(
-    payload.voidReason || '', payload.voidedAt || new Date().toISOString(),
-    payload.voidedBy || '', saleId
+    payload.voidReason || '',
+    payload.voidedAt || new Date().toISOString(),
+    payload.voidedBy || '',
+    new Date().toISOString(),
+    saleId
   ).run();
 }
 
