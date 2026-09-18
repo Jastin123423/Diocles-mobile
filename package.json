@@ -1,8 +1,10 @@
+
 {
   "name": "diocres-hardware-solutions",
   "private": true,
   "version": "1.0.0",
-  "description": "Diocres Hardware & Retail Solutions - Offline Mobile Android POS & Business Management System",
+  "description": "Diocres Hardware & Retail Solutions - Offline Desktop POS & Business Management System",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
@@ -10,34 +12,80 @@
     "preview": "vite preview",
     "clean": "rm -rf dist release server.js",
     "lint": "tsc --noEmit",
-    "cap:sync": "cap sync",
-    "cap:android": "cap open android",
-    "android:build": "npm run build && npx cap sync android"
+    "electron": "electron .",
+    "electron:dev": "cross-env NODE_ENV=development electron .",
+    "electron:build": "npm run build && electron-builder",
+    "dist": "npm run build && electron-builder --win",
+    "dist:win": "npm run build && electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.diocres.hardwaresolutions",
+    "productName": "Diocres Hardware & Retail Solutions",
+    "copyright": "Copyright © 2026 Diocres Hardware & Retail Solutions",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "BusinessManagementSetup.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Diocres Hardware POS",
+      "uninstallDisplayName": "Diocres Hardware & Retail Solutions",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
   },
   "dependencies": {
-    "@capacitor/android": "^8.5.0",
-    "@capacitor/cli": "^8.5.0",
-    "@capacitor/core": "^8.5.0",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
-    "dotenv": "^17.2.3",
-    "express": "^4.21.2",
     "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "express": "^4.21.2",
+    "dotenv": "^17.2.3",
+    "motion": "^12.23.24",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.25.0",
-    "sharp": "^0.35.4",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.34.8",
+    "@rollup/rollup-linux-x64-gnu": "^4.34.8",
+    "@tailwindcss/oxide-win32-x64-msvc": "^4.1.14",
+    "@tailwindcss/oxide-linux-x64-gnu": "^4.1.14",
+    "lightningcss-win32-x64-msvc": "^1.29.1",
+    "lightningcss-linux-x64-gnu": "^1.29.1"
   }
 }
