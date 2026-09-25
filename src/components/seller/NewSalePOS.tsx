@@ -24,9 +24,10 @@ import { formatCurrency } from '../../utils/formatters';
 import { ProductThumbnail } from '../common/ProductThumbnail';
 import { ProductImageViewerModal } from '../common/ProductImageViewerModal';
 
+// 🔧 FIX: quantity can be number OR string (empty state while editing)
 interface CartItem {
   product: Product;
-  quantity: number;
+  quantity: number | string;
   unitPrice: number;
   discount: number;
 }
@@ -80,13 +81,23 @@ export const NewSalePOS: React.FC = () => {
     });
   }, [products, selectedCategory, searchQuery]);
 
-  // Cart Calculations
+  // 🔧 FIX: safe numeric coercion for quantity
+  const qtyNum = (q: number | string): number => {
+    if (typeof q === 'number') return Number.isFinite(q) ? q : 0;
+    const parsed = parseInt(q, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  // Cart Calculations (now safe when a quantity is "")
   const subtotal = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.quantity * item.unitPrice - item.discount, 0);
+    return cart.reduce(
+      (sum, item) => sum + qtyNum(item.quantity) * item.unitPrice - item.discount,
+      0
+    );
   }, [cart]);
 
   const totalItemsCount = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.quantity, 0);
+    return cart.reduce((sum, item) => sum + qtyNum(item.quantity), 0);
   }, [cart]);
 
   const totalAmount = useMemo(() => {
@@ -118,7 +129,8 @@ export const NewSalePOS: React.FC = () => {
     setCart(prev => {
       const existing = prev.find(item => item.product.id === product.id);
       if (existing) {
-        if (existing.quantity >= product.currentStock) {
+        const currentQty = qtyNum(existing.quantity);
+        if (currentQty >= product.currentStock) {
           addToast({
             type: 'warning',
             title: 'Stock Limit Reached',
@@ -128,7 +140,7 @@ export const NewSalePOS: React.FC = () => {
         }
         return prev.map(item =>
           item.product.id === product.id
-            ? { ...item, quantity: item.quantity + 1 }
+            ? { ...item, quantity: currentQty + 1 }
             : item
         );
       }
@@ -150,30 +162,59 @@ export const NewSalePOS: React.FC = () => {
     );
   };
 
-  const updateQuantity = (productId: string, newQty: number) => {
+  // 🔧 FIX: The core change.
+  //   - Allow empty string mid-edit (do NOT remove the row)
+  //   - Clamp values below 1 to 1
+  //   - Enforce stock ceiling
+  //   - Only the trash button removes a row
+  const updateQuantity = (productId: string, rawValue: string) => {
     const item = cart.find(i => i.product.id === productId);
     if (!item) return;
 
-    if (newQty <= 0) {
-      removeFromCart(productId);
+    if (rawValue === '') {
+      setCart(prev =>
+        prev.map(i => (i.product.id === productId ? { ...i, quantity: '' } : i))
+      );
       return;
     }
 
-    if (newQty > item.product.currentStock) {
+    const parsed = parseInt(rawValue, 10);
+    if (!Number.isFinite(parsed)) return;
+
+    let nextQty = parsed;
+    if (nextQty < 1) nextQty = 1;
+
+    if (nextQty > item.product.currentStock) {
       addToast({
         type: 'warning',
         title: 'Stock Exceeded',
         description: `Max stock for this item is ${item.product.currentStock}.`,
       });
-      setCart(prev =>
-        prev.map(i => (i.product.id === productId ? { ...i, quantity: item.product.currentStock } : i))
-      );
-      return;
+      nextQty = item.product.currentStock;
     }
 
     setCart(prev =>
-      prev.map(i => (i.product.id === productId ? { ...i, quantity: newQty } : i))
+      prev.map(i => (i.product.id === productId ? { ...i, quantity: nextQty } : i))
     );
+  };
+
+  // 🔧 FIX: On blur, if the field is blank or 0, normalize back to 1
+  const handleQuantityBlur = (productId: string) => {
+    setCart(prev =>
+      prev.map(i => {
+        if (i.product.id !== productId) return i;
+        const n = qtyNum(i.quantity);
+        return { ...i, quantity: n < 1 ? 1 : n };
+      })
+    );
+  };
+
+  // 🔧 FIX: +/- step buttons operate on numbers, never hitting 0
+  const stepQuantity = (productId: string, delta: number) => {
+    const item = cart.find(i => i.product.id === productId);
+    if (!item) return;
+    const current = qtyNum(item.quantity) || 1;
+    updateQuantity(productId, String(current + delta));
   };
 
   const removeFromCart = (productId: string) => {
@@ -229,6 +270,17 @@ export const NewSalePOS: React.FC = () => {
       return;
     }
 
+    // 🔧 FIX: Validate every row has a sensible quantity
+    const invalid = cart.find(i => qtyNum(i.quantity) < 1);
+    if (invalid) {
+      addToast({
+        type: 'error',
+        title: 'Invalid Quantity',
+        description: `Please set a quantity of at least 1 for ${invalid.product.name}.`,
+      });
+      return;
+    }
+
     const tender = paymentMethod === 'CASH' ? (parseFloat(amountReceived) || 0) : totalAmount;
 
     if (paymentMethod === 'CASH' && tender < totalAmount) {
@@ -247,7 +299,7 @@ export const NewSalePOS: React.FC = () => {
         shopId: targetShopId === 'ALL' ? (dbState.shops[0]?.id || '') : (targetShopId || dbState.shops[0]?.id || ''),
         items: cart.map(i => ({
           productId: i.product.id,
-          quantity: i.quantity,
+          quantity: qtyNum(i.quantity),   // 🔧 FIX: use safe numeric coercion
           unitPrice: i.unitPrice,
           discount: i.discount,
         })),
@@ -325,7 +377,7 @@ export const NewSalePOS: React.FC = () => {
             const cost = item.product.purchasePrice || 0;
             const isBelowCost = item.unitPrice < cost && cost > 0;
             const isBelowProposed = !isBelowCost && item.unitPrice < proposed && proposed > 0;
-            const itemProfit = (item.unitPrice - cost) * item.quantity - item.discount;
+            const itemProfit = (item.unitPrice - cost) * qtyNum(item.quantity) - item.discount;
 
             return (
               <div
@@ -357,7 +409,7 @@ export const NewSalePOS: React.FC = () => {
                       </div>
                       <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 flex-wrap">
                         <span className="font-semibold text-emerald-400 font-mono">
-                          Total: {formatCurrency(item.quantity * item.unitPrice - item.discount, settings.currencySymbol)}
+                          Total: {formatCurrency(qtyNum(item.quantity) * item.unitPrice - item.discount, settings.currencySymbol)}
                         </span>
                         {cost > 0 && (
                           <>
@@ -411,24 +463,28 @@ export const NewSalePOS: React.FC = () => {
                   <div className="flex items-center gap-1">
                     <label className="text-[10px] text-slate-400">Idadi:</label>
                     <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+                      {/* 🔧 FIX: stepQuantity prevents 1 → 0 from deleting the row */}
                       <button
                         type="button"
-                        onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
+                        onClick={() => stepQuantity(item.product.id, -1)}
                         className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
                       >
                         <Minus className="w-3.5 h-3.5" />
                       </button>
+                      {/* 🔧 FIX: text input, allows empty state mid-edit; onBlur normalizes */}
                       <input
-                        type="number"
-                        min="1"
-                        max={item.product.currentStock}
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         value={item.quantity}
-                        onChange={e => updateQuantity(item.product.id, parseInt(e.target.value, 10) || 0)}
+                        onChange={e => updateQuantity(item.product.id, e.target.value)}
+                        onBlur={() => handleQuantityBlur(item.product.id)}
+                        onFocus={e => e.target.select()}
                         className="w-12 bg-slate-950 border border-slate-700 rounded text-center text-xs font-bold text-white font-mono py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
                       />
                       <button
                         type="button"
-                        onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
+                        onClick={() => stepQuantity(item.product.id, 1)}
                         className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
                       >
                         <Plus className="w-3.5 h-3.5" />
@@ -478,7 +534,7 @@ export const NewSalePOS: React.FC = () => {
           </div>
         </div>
 
-        {/* Cash Tender - Simplified, auto-filled, no quick buttons */}
+        {/* Cash Tender */}
         {paymentMethod === 'CASH' && (
           <div className="space-y-1">
             <div className="flex items-center justify-between text-xs">
