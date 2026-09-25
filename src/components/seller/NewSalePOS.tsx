@@ -12,9 +12,7 @@ import {
   Landmark,
   Layers,
   CheckCircle,
-  AlertCircle,
   X,
-  ArrowRight,
   ChevronUp,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
@@ -24,7 +22,6 @@ import { formatCurrency } from '../../utils/formatters';
 import { ProductThumbnail } from '../common/ProductThumbnail';
 import { ProductImageViewerModal } from '../common/ProductImageViewerModal';
 
-// 🔧 FIX: quantity can be number OR string (empty state while editing)
 interface CartItem {
   product: Product;
   quantity: number | string;
@@ -81,14 +78,14 @@ export const NewSalePOS: React.FC = () => {
     });
   }, [products, selectedCategory, searchQuery]);
 
-  // 🔧 FIX: safe numeric coercion for quantity
+  // Safe numeric coercion for quantity
   const qtyNum = (q: number | string): number => {
     if (typeof q === 'number') return Number.isFinite(q) ? q : 0;
     const parsed = parseInt(q, 10);
     return Number.isFinite(parsed) ? parsed : 0;
   };
 
-  // Cart Calculations (now safe when a quantity is "")
+  // Cart Calculations
   const subtotal = useMemo(() => {
     return cart.reduce(
       (sum, item) => sum + qtyNum(item.quantity) * item.unitPrice - item.discount,
@@ -162,11 +159,6 @@ export const NewSalePOS: React.FC = () => {
     );
   };
 
-  // 🔧 FIX: The core change.
-  //   - Allow empty string mid-edit (do NOT remove the row)
-  //   - Clamp values below 1 to 1
-  //   - Enforce stock ceiling
-  //   - Only the trash button removes a row
   const updateQuantity = (productId: string, rawValue: string) => {
     const item = cart.find(i => i.product.id === productId);
     if (!item) return;
@@ -198,7 +190,6 @@ export const NewSalePOS: React.FC = () => {
     );
   };
 
-  // 🔧 FIX: On blur, if the field is blank or 0, normalize back to 1
   const handleQuantityBlur = (productId: string) => {
     setCart(prev =>
       prev.map(i => {
@@ -209,7 +200,6 @@ export const NewSalePOS: React.FC = () => {
     );
   };
 
-  // 🔧 FIX: +/- step buttons operate on numbers, never hitting 0
   const stepQuantity = (productId: string, delta: number) => {
     const item = cart.find(i => i.product.id === productId);
     if (!item) return;
@@ -270,7 +260,6 @@ export const NewSalePOS: React.FC = () => {
       return;
     }
 
-    // 🔧 FIX: Validate every row has a sensible quantity
     const invalid = cart.find(i => qtyNum(i.quantity) < 1);
     if (invalid) {
       addToast({
@@ -299,7 +288,7 @@ export const NewSalePOS: React.FC = () => {
         shopId: targetShopId === 'ALL' ? (dbState.shops[0]?.id || '') : (targetShopId || dbState.shops[0]?.id || ''),
         items: cart.map(i => ({
           productId: i.product.id,
-          quantity: qtyNum(i.quantity),   // 🔧 FIX: use safe numeric coercion
+          quantity: qtyNum(i.quantity),
           unitPrice: i.unitPrice,
           discount: i.discount,
         })),
@@ -330,7 +319,7 @@ export const NewSalePOS: React.FC = () => {
     }
   };
 
-  // Cart Items Component shared between Desktop Right Sidebar & Mobile Modal/Drawer
+  // Cart Items Component — SELLER VIEW (no cost / no profit / no warnings)
   const renderCartItemsAndCheckout = () => (
     <div className="flex flex-col h-full justify-between overflow-hidden bg-slate-900">
       {/* Cart Header */}
@@ -372,129 +361,91 @@ export const NewSalePOS: React.FC = () => {
             </p>
           </div>
         ) : (
-          cart.map(item => {
-            const proposed = item.product.proposedSellingPrice || item.product.sellingPrice;
-            const cost = item.product.purchasePrice || 0;
-            const isBelowCost = item.unitPrice < cost && cost > 0;
-            const isBelowProposed = !isBelowCost && item.unitPrice < proposed && proposed > 0;
-            const itemProfit = (item.unitPrice - cost) * qtyNum(item.quantity) - item.discount;
-
-            return (
-              <div
-                key={item.product.id}
-                className={`bg-slate-950 border rounded-xl p-2.5 space-y-2 transition shadow-sm ${
-                  isBelowCost
-                    ? 'border-rose-500/60 bg-rose-950/20'
-                    : isBelowProposed
-                    ? 'border-amber-500/50 bg-amber-950/10'
-                    : 'border-slate-800'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                    <ProductThumbnail
-                      product={item.product}
-                      size="sm"
-                      onClick={() => {
-                        setViewingProduct(item.product);
-                        setIsViewerOpen(true);
-                      }}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <h5 className="text-xs font-semibold text-white truncate">{item.product.name}</h5>
-                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
-                          {item.product.sku}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 flex-wrap">
-                        <span className="font-semibold text-emerald-400 font-mono">
-                          Total: {formatCurrency(qtyNum(item.quantity) * item.unitPrice - item.discount, settings.currencySymbol)}
-                        </span>
-                        {cost > 0 && (
-                          <>
-                            <span>•</span>
-                            <span className={`text-[10px] font-medium font-mono ${itemProfit >= 0 ? 'text-slate-400' : 'text-rose-400 font-bold'}`}>
-                              Faida: {formatCurrency(itemProfit, settings.currencySymbol)}
-                            </span>
-                          </>
-                        )}
-                      </div>
+          cart.map(item => (
+            <div
+              key={item.product.id}
+              className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 space-y-2 transition shadow-sm"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <ProductThumbnail
+                    product={item.product}
+                    size="sm"
+                    onClick={() => {
+                      setViewingProduct(item.product);
+                      setIsViewerOpen(true);
+                    }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <h5 className="text-xs font-semibold text-white truncate">{item.product.name}</h5>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
+                        {item.product.sku}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 flex-wrap">
+                      <span className="font-semibold text-emerald-400 font-mono">
+                        Total: {formatCurrency(qtyNum(item.quantity) * item.unitPrice - item.discount, settings.currencySymbol)}
+                      </span>
                     </div>
                   </div>
-
-                  <button
-                    onClick={() => removeFromCart(item.product.id)}
-                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 shrink-0 transition"
-                    title="Remove item"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
                 </div>
 
-                {/* Warning Alerts for Pricing */}
-                {isBelowCost && (
-                  <div className="flex items-center gap-1 text-[10px] font-bold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
-                    <AlertCircle className="w-3 h-3 shrink-0" />
-                    <span>Below purchase cost</span>
-                  </div>
-                )}
-                {isBelowProposed && (
-                  <div className="flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                    <AlertCircle className="w-3 h-3 shrink-0" />
-                    <span>Below proposed price</span>
-                  </div>
-                )}
+                <button
+                  onClick={() => removeFromCart(item.product.id)}
+                  className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 shrink-0 transition"
+                  title="Remove item"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
 
-                {/* Controls: Editable Price & Quantity Stepper */}
-                <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-900">
-                  <div className="flex items-center gap-1.5">
-                    <label className="text-[10px] text-slate-400">Bei:</label>
+              {/* Controls: Editable Price & Quantity Stepper */}
+              <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-900">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-[10px] text-slate-400">Bei:</label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={item.unitPrice}
+                    onChange={e => updateUnitPrice(item.product.id, parseFloat(e.target.value) || 0)}
+                    className="w-20 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <label className="text-[10px] text-slate-400">Idadi:</label>
+                  <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => stepQuantity(item.product.id, -1)}
+                      className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
+                    >
+                      <Minus className="w-3.5 h-3.5" />
+                    </button>
                     <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={item.unitPrice}
-                      onChange={e => updateUnitPrice(item.product.id, parseFloat(e.target.value) || 0)}
-                      className="w-20 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={item.quantity}
+                      onChange={e => updateQuantity(item.product.id, e.target.value)}
+                      onBlur={() => handleQuantityBlur(item.product.id)}
+                      onFocus={e => e.target.select()}
+                      className="w-12 bg-slate-950 border border-slate-700 rounded text-center text-xs font-bold text-white font-mono py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
-                  </div>
-
-                  <div className="flex items-center gap-1">
-                    <label className="text-[10px] text-slate-400">Idadi:</label>
-                    <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
-                      {/* 🔧 FIX: stepQuantity prevents 1 → 0 from deleting the row */}
-                      <button
-                        type="button"
-                        onClick={() => stepQuantity(item.product.id, -1)}
-                        className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      {/* 🔧 FIX: text input, allows empty state mid-edit; onBlur normalizes */}
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        value={item.quantity}
-                        onChange={e => updateQuantity(item.product.id, e.target.value)}
-                        onBlur={() => handleQuantityBlur(item.product.id)}
-                        onFocus={e => e.target.select()}
-                        className="w-12 bg-slate-950 border border-slate-700 rounded text-center text-xs font-bold text-white font-mono py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => stepQuantity(item.product.id, 1)}
-                        className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => stepQuantity(item.product.id, 1)}
+                      className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               </div>
-            );
-          })
+            </div>
+          ))
         )}
       </div>
 
