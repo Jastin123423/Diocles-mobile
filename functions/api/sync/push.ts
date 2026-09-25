@@ -540,21 +540,16 @@ async function createPurchase(db: any, purchase: any) {
     ).run();
 
     const product = await db.prepare(
-      'SELECT current_stock, purchase_price FROM products WHERE id = ?'
+      'SELECT current_stock FROM products WHERE id = ?'
     ).bind(item.productId).first();
 
     if (product) {
       const currentStock = Number(product.current_stock) || 0;
-      const currentPrice = Number(product.purchase_price) || 0;
-      const currentTotalCost = currentStock * currentPrice;
       const newPurchaseQty = Number(item.quantity) || 0;
       const newUnitCost = Number(item.unitCost) || 0;
-      const newTotalCost = newPurchaseQty * newUnitCost;
       const newTotalStock = currentStock + newPurchaseQty;
-      const newAveragePrice = newTotalStock > 0 
-        ? (currentTotalCost + newTotalCost) / newTotalStock 
-        : newUnitCost;
 
+      // ✅ LATEST PURCHASE PRICE (no averaging)
       await db.prepare(`
         UPDATE products 
         SET current_stock = ?, 
@@ -563,7 +558,7 @@ async function createPurchase(db: any, purchase: any) {
         WHERE id = ?
       `).bind(
         newTotalStock,
-        Number(newAveragePrice.toFixed(2)),
+        Number(newUnitCost.toFixed(2)),   // ✅ Latest price only
         new Date().toISOString(),
         item.productId
       ).run();
@@ -654,21 +649,16 @@ async function updatePurchase(db: any, purchase: any) {
     ).run();
 
     const product = await db.prepare(
-      'SELECT current_stock, purchase_price FROM products WHERE id = ?'
+      'SELECT current_stock FROM products WHERE id = ?'
     ).bind(item.productId).first();
 
     if (product) {
       const currentStock = Number(product.current_stock) || 0;
-      const currentPrice = Number(product.purchase_price) || 0;
-      const currentTotalCost = currentStock * currentPrice;
       const newPurchaseQty = Number(item.quantity) || 0;
       const newUnitCost = Number(item.unitCost) || 0;
-      const newTotalCost = newPurchaseQty * newUnitCost;
       const newTotalStock = currentStock + newPurchaseQty;
-      const newAveragePrice = newTotalStock > 0 
-        ? (currentTotalCost + newTotalCost) / newTotalStock 
-        : newUnitCost;
 
+      // ✅ LATEST PURCHASE PRICE (no averaging)
       await db.prepare(`
         UPDATE products 
         SET current_stock = ?,
@@ -677,7 +667,7 @@ async function updatePurchase(db: any, purchase: any) {
         WHERE id = ?
       `).bind(
         newTotalStock,
-        Number(newAveragePrice.toFixed(2)),
+        Number(newUnitCost.toFixed(2)),   // ✅ Latest price only
         new Date().toISOString(),
         item.productId
       ).run();
