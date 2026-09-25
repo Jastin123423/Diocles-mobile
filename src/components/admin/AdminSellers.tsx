@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Users,
   UserPlus,
@@ -15,16 +15,229 @@ import {
   Store,
   Camera,
   Upload,
+  Trash2,
+  MoreVertical,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { SellerService } from '../../services/sellerService';
 import { AuthService } from '../../services/authService';
 import { StorageService } from '../../db/storage';
 import { CloudflareApi } from '../../services/cloudflareApi';
-import { User } from '../../types';
+import { User, SellerPermissions } from '../../types';
 import { SELLER_COLORS, getSellerColorById } from '../../utils/colors';
-import { formatCurrency, formatDateTime } from '../../utils/formatters';
+import { formatCurrency } from '../../utils/formatters';
 
+// ─────────────────────────────────────────────────────────────
+// Permission metadata (single source of truth)
+// ─────────────────────────────────────────────────────────────
+type PermissionKey = keyof SellerPermissions;
+
+const PERMISSION_DEFS: { key: PermissionKey; label: string; hint: string; color: string }[] = [
+  { key: 'canEditProducts',    label: 'Edit Products',    hint: 'Modify existing product details', color: 'blue' },
+  { key: 'canDeleteProducts',  label: 'Delete Products',  hint: 'Remove products from catalog',    color: 'rose' },
+  { key: 'canManageInventory', label: 'Manage Inventory', hint: 'Adjust stock levels',             color: 'amber' },
+  { key: 'canEditSales',       label: 'Edit Sales',       hint: 'Modify sales without approval',   color: 'emerald' },
+  { key: 'canDeleteSales',     label: 'Void Sales',       hint: 'Cancel / void transactions',      color: 'purple' },
+  { key: 'canManageDebts',     label: 'Manage All Debts', hint: 'Handle debts beyond own sales',   color: 'cyan' },
+  { key: 'canViewReports',     label: 'View Reports',     hint: 'Access financial reports',        color: 'indigo' },
+  { key: 'canRecordPurchases', label: 'Record Purchases', hint: 'Log supplier purchases',          color: 'orange' },
+  { key: 'canViewExpenses',    label: 'View Expenses',    hint: 'See expense records',             color: 'teal' },
+  { key: 'canRecordExpenses',  label: 'Record Expenses',  hint: 'Add new expense entries',         color: 'lime' },
+  { key: 'canManageShops',     label: 'Manage Shops',     hint: 'Create / edit shop units',        color: 'pink' },
+  { key: 'canManageSellers',   label: 'Manage Sellers',   hint: 'Create / edit other sellers',     color: 'slate' },
+];
+
+const badgeClassFor = (color: string) => {
+  const map: Record<string, string> = {
+    blue: 'bg-blue-950/50 text-blue-300 border-blue-800/40',
+    rose: 'bg-rose-950/50 text-rose-300 border-rose-800/40',
+    amber: 'bg-amber-950/50 text-amber-300 border-amber-800/40',
+    emerald: 'bg-emerald-950/50 text-emerald-300 border-emerald-800/40',
+    purple: 'bg-purple-950/50 text-purple-300 border-purple-800/40',
+    cyan: 'bg-cyan-950/50 text-cyan-300 border-cyan-800/40',
+    indigo: 'bg-indigo-950/50 text-indigo-300 border-indigo-800/40',
+    orange: 'bg-orange-950/50 text-orange-300 border-orange-800/40',
+    teal: 'bg-teal-950/50 text-teal-300 border-teal-800/40',
+    lime: 'bg-lime-950/50 text-lime-300 border-lime-800/40',
+    pink: 'bg-pink-950/50 text-pink-300 border-pink-800/40',
+    slate: 'bg-slate-700/50 text-slate-300 border-slate-600/40',
+  };
+  return map[color] || map.slate;
+};
+
+// ─────────────────────────────────────────────────────────────
+// Reusable Permissions Selector
+// ─────────────────────────────────────────────────────────────
+const PermissionsSelector: React.FC<{
+  permissions: SellerPermissions;
+  onToggle: (key: PermissionKey) => void;
+}> = ({ permissions, onToggle }) => {
+  const [expanded, setExpanded] = useState(false);
+  const grantedCount = Object.values(permissions).filter(Boolean).length;
+
+  return (
+    <div className="rounded-xl bg-slate-950 border border-slate-800 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-slate-900/60 transition"
+      >
+        <span className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+          <Shield className="w-3.5 h-3.5 text-blue-400" />
+          Permissions Granted
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 font-mono">
+            {grantedCount}/{PERMISSION_DEFS.length}
+          </span>
+        </span>
+        {expanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+      </button>
+
+      {expanded && (
+        <div className="border-t border-slate-800 p-2 space-y-1 max-h-64 overflow-y-auto">
+          {PERMISSION_DEFS.map(def => {
+            const enabled = !!permissions[def.key];
+            return (
+              <label
+                key={def.key}
+                className="flex items-start justify-between gap-3 p-2 rounded-lg hover:bg-slate-900 cursor-pointer active:bg-slate-800/80"
+              >
+                <span className="flex-1 min-w-0">
+                  <span className="block text-xs text-slate-100 font-medium leading-tight">{def.label}</span>
+                  <span className="block text-[10px] text-slate-500 mt-0.5 leading-tight">{def.hint}</span>
+                </span>
+                <span className={`relative shrink-0 w-9 h-5 rounded-full transition-colors ${enabled ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                  <input type="checkbox" checked={enabled} onChange={() => onToggle(def.key)} className="sr-only" />
+                  <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// 3-Dot Action Sheet
+// ─────────────────────────────────────────────────────────────
+const SellerActionSheet: React.FC<{
+  seller: User;
+  onClose: () => void;
+  onEdit: () => void;
+  onPassword: () => void;
+  onToggle: () => void;
+  onDelete: () => void;
+}> = ({ seller, onClose, onEdit, onPassword, onToggle, onDelete }) => {
+  const isActive = seller.status === 'ACTIVE';
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const Item = ({
+    icon, label, hint, onClick, tone = 'default',
+  }: {
+    icon: React.ReactNode; label: string; hint: string; onClick: () => void; tone?: 'default' | 'danger' | 'success' | 'warn';
+  }) => {
+    const toneCls =
+      tone === 'danger'  ? 'text-rose-300 hover:bg-rose-500/10 active:bg-rose-500/20'
+    : tone === 'success' ? 'text-emerald-300 hover:bg-emerald-500/10 active:bg-emerald-500/20'
+    : tone === 'warn'    ? 'text-amber-300 hover:bg-amber-500/10 active:bg-amber-500/20'
+    : 'text-slate-200 hover:bg-slate-800/70 active:bg-slate-800';
+
+    return (
+      <button
+        onClick={onClick}
+        className={`w-full flex items-center gap-3 px-4 py-3 transition text-left ${toneCls}`}
+      >
+        <span className="shrink-0">{icon}</span>
+        <span className="flex-1 min-w-0">
+          <span className="block text-sm font-semibold leading-tight">{label}</span>
+          <span className="block text-[11px] text-slate-500 leading-tight mt-0.5">{hint}</span>
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm shadow-2xl animate-in fade-in slide-in-from-bottom-4 sm:zoom-in-95 overflow-hidden"
+      >
+        {/* Header */}
+        <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Actions for</p>
+            <p className="text-sm font-bold text-white truncate">{seller.name}</p>
+            <p className="text-[11px] text-slate-400 font-mono truncate">@{seller.username}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 active:bg-slate-700"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Items */}
+        <div className="py-1">
+          <Item
+            icon={<Edit className="w-4 h-4 text-slate-400" />}
+            label="Edit Seller"
+            hint="Name, shops, permissions, color"
+            onClick={onEdit}
+          />
+          <Item
+            icon={<KeyRound className="w-4 h-4 text-amber-400" />}
+            label="Reset Password"
+            hint="Override this seller's login password"
+            tone="warn"
+            onClick={onPassword}
+          />
+          <Item
+            icon={<Power className={`w-4 h-4 ${isActive ? 'text-rose-400' : 'text-emerald-400'}`} />}
+            label={isActive ? 'Disable Account' : 'Enable Account'}
+            hint={isActive ? 'Block future logins, keep history' : 'Restore login access for this seller'}
+            tone={isActive ? 'danger' : 'success'}
+            onClick={onToggle}
+          />
+          <Item
+            icon={<Trash2 className="w-4 h-4 text-rose-400" />}
+            label="Delete Seller"
+            hint="Permanent — cannot be undone"
+            tone="danger"
+            onClick={onDelete}
+          />
+        </div>
+
+        {/* Cancel (mobile bottom-sheet style) */}
+        <div className="sm:hidden p-2 border-t border-slate-800 bg-slate-950/60">
+          <button
+            onClick={onClose}
+            className="w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-200 text-sm font-semibold"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// Main component
+// ─────────────────────────────────────────────────────────────
 export const AdminSellers: React.FC = () => {
   const { currentUser, dbState, addToast, refreshUser } = useApp();
 
@@ -33,6 +246,8 @@ export const AdminSellers: React.FC = () => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [selectedSeller, setSelectedSeller] = useState<User | null>(null);
+  const [actionSheetSeller, setActionSheetSeller] = useState<User | null>(null);
+  const [deletingSeller, setDeletingSeller] = useState<User | null>(null);
 
   // Form states
   const [name, setName] = useState('');
@@ -40,6 +255,7 @@ export const AdminSellers: React.FC = () => {
   const [password, setPassword] = useState('');
   const [selectedColor, setSelectedColor] = useState('blue');
   const [assignedShopIds, setAssignedShopIds] = useState<string[]>([]);
+  const [sellerPermissions, setSellerPermissions] = useState<SellerPermissions>({});
   const [formError, setFormError] = useState('');
 
   // Password reset state
@@ -51,14 +267,15 @@ export const AdminSellers: React.FC = () => {
   const [uploadingSellerId, setUploadingSellerId] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
-  if (!currentUser || currentUser.role !== 'ADMIN') return null;
+  if (!currentUser) return null;
+  if (currentUser.role !== 'ADMIN' && !currentUser.permissions?.canManageSellers) return null;
 
   const sellers = dbState.users.filter(u => u.role === 'SELLER');
   const allShops = dbState.shops || [];
 
-  // Helper to compress image
-  const compressImage = (file: File, maxWidth: number, maxHeight: number): Promise<Blob> => {
-    return new Promise((resolve, reject) => {
+  // ── Image helpers ──────────────────────────────────────────
+  const compressImage = (file: File, maxWidth: number, maxHeight: number): Promise<Blob> =>
+    new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const img = new Image();
@@ -66,24 +283,14 @@ export const AdminSellers: React.FC = () => {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          
-          if (width > maxWidth) {
-            height = (maxWidth / width) * height;
-            width = maxWidth;
-          }
-          if (height > maxHeight) {
-            width = (maxHeight / height) * width;
-            height = maxHeight;
-          }
-          
+          if (width > maxWidth) { height = (maxWidth / width) * height; width = maxWidth; }
+          if (height > maxHeight) { width = (maxHeight / height) * width; height = maxHeight; }
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
-          
           canvas.toBlob((blob) => {
-            if (blob) resolve(blob);
-            else reject(new Error('Failed to compress image'));
+            if (blob) resolve(blob); else reject(new Error('Failed to compress image'));
           }, 'image/jpeg', 0.8);
         };
         img.onerror = reject;
@@ -92,45 +299,30 @@ export const AdminSellers: React.FC = () => {
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-  };
 
   const handleAvatarUpload = async (sellerId: string, file: File) => {
     if (!file) return;
-
     setUploadingSellerId(sellerId);
     setIsUploadingAvatar(true);
-    
     try {
       const compressed = await compressImage(file, 200, 200);
       const result = await CloudflareApi.uploadImage(compressed, 'seller', sellerId);
-      
       if (result.success) {
         const users = StorageService.getUsers();
-        const userIndex = users.findIndex(u => u.id === sellerId);
-        if (userIndex !== -1) {
-          users[userIndex].avatarUrl = result.url;
+        const i = users.findIndex(u => u.id === sellerId);
+        if (i !== -1) {
+          users[i].avatarUrl = result.url;
           StorageService.saveUsers(users);
           if (refreshUser) refreshUser();
         }
-        
-        addToast({
-          type: 'success',
-          title: 'Profile Picture Updated',
-          description: 'Seller profile picture has been updated successfully.',
-        });
+        addToast({ type: 'success', title: 'Profile Picture Updated', description: 'Seller profile picture has been updated successfully.' });
       }
     } catch (error: any) {
-      addToast({
-        type: 'error',
-        title: 'Upload Failed',
-        description: error.message || 'Could not upload profile picture.',
-      });
+      addToast({ type: 'error', title: 'Upload Failed', description: error.message || 'Could not upload profile picture.' });
     } finally {
       setIsUploadingAvatar(false);
       setUploadingSellerId(null);
-      if (avatarInputRef.current) {
-        avatarInputRef.current.value = '';
-      }
+      if (avatarInputRef.current) avatarInputRef.current.value = '';
     }
   };
 
@@ -144,11 +336,10 @@ export const AdminSellers: React.FC = () => {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     const sellerId = e.target.dataset.sellerId;
-    if (file && sellerId) {
-      handleAvatarUpload(sellerId, file);
-    }
+    if (file && sellerId) handleAvatarUpload(sellerId, file);
   };
 
+  // ── Modal openers ──────────────────────────────────────────
   const openAddModal = () => {
     setName('');
     setUsername('');
@@ -156,6 +347,7 @@ export const AdminSellers: React.FC = () => {
     setSelectedColor('blue');
     const activeShopIds = allShops.filter(s => s.status === 'ACTIVE').map(s => s.id);
     setAssignedShopIds(activeShopIds.length > 0 ? [activeShopIds[0]] : []);
+    setSellerPermissions({});
     setFormError('');
     setIsAddModalOpen(true);
   };
@@ -165,6 +357,7 @@ export const AdminSellers: React.FC = () => {
     setName(s.name);
     setSelectedColor(s.color || 'blue');
     setAssignedShopIds(s.assignedShopIds || []);
+    setSellerPermissions(s.permissions || {});
     setFormError('');
     setIsEditModalOpen(true);
   };
@@ -182,20 +375,20 @@ export const AdminSellers: React.FC = () => {
     );
   };
 
+  const togglePermission = (key: PermissionKey) => {
+    setSellerPermissions(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  // ── Submit handlers ────────────────────────────────────────
   const handleCreateSeller = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
-
     if (!name.trim() || !username.trim() || !password) {
-      setFormError('All required fields must be filled.');
-      return;
+      setFormError('All required fields must be filled.'); return;
     }
-
     if (assignedShopIds.length === 0) {
-      setFormError('Please select at least one shop for this seller.');
-      return;
+      setFormError('Please select at least one shop for this seller.'); return;
     }
-
     const res = await SellerService.createSeller(
       {
         name: name.trim(),
@@ -203,16 +396,12 @@ export const AdminSellers: React.FC = () => {
         password,
         color: selectedColor,
         assignedShopIds,
+        permissions: sellerPermissions,
       },
       currentUser
     );
-
     if (res.success) {
-      addToast({
-        type: 'success',
-        title: 'Seller Account Created',
-        description: `Account for '${name}' (@${username}) is ready for login.`,
-      });
+      addToast({ type: 'success', title: 'Seller Account Created', description: `Account for '${name}' (@${username}) is ready for login.` });
       setIsAddModalOpen(false);
     } else {
       setFormError(res.error || 'Failed to create seller.');
@@ -222,28 +411,21 @@ export const AdminSellers: React.FC = () => {
   const handleUpdateSeller = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSeller) return;
-
     if (assignedShopIds.length === 0) {
-      setFormError('Please select at least one shop for this seller.');
-      return;
+      setFormError('Please select at least one shop for this seller.'); return;
     }
-
     const res = SellerService.updateSeller(
       selectedSeller.id,
       {
         name: name.trim(),
         color: selectedColor,
         assignedShopIds,
+        permissions: sellerPermissions,
       },
       currentUser
     );
-
     if (res.success) {
-      addToast({
-        type: 'success',
-        title: 'Seller Updated',
-        description: `Profile and shop assignments for '${name}' updated.`,
-      });
+      addToast({ type: 'success', title: 'Seller Updated', description: `Profile, shop assignments, and permissions for '${name}' updated.` });
       setIsEditModalOpen(false);
     } else {
       setFormError(res.error || 'Failed to update seller.');
@@ -253,24 +435,12 @@ export const AdminSellers: React.FC = () => {
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSeller) return;
-
     if (!newAdminSetPass || newAdminSetPass.length < 4) {
-      setPassError('Password must be at least 4 characters long.');
-      return;
+      setPassError('Password must be at least 4 characters long.'); return;
     }
-
-    const res = await AuthService.adminResetPassword(
-      selectedSeller.id,
-      newAdminSetPass,
-      currentUser
-    );
-
+    const res = await AuthService.adminResetPassword(selectedSeller.id, newAdminSetPass, currentUser);
     if (res.success) {
-      addToast({
-        type: 'success',
-        title: 'Password Overridden',
-        description: `New password assigned to @${selectedSeller.username}.`,
-      });
+      addToast({ type: 'success', title: 'Password Overridden', description: `New password assigned to @${selectedSeller.username}.` });
       setIsPasswordModalOpen(false);
     } else {
       setPassError(res.error || 'Failed to update password.');
@@ -280,7 +450,6 @@ export const AdminSellers: React.FC = () => {
   const handleToggleStatus = (s: User) => {
     const newStatus = s.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
     const res = SellerService.toggleSellerStatus(s.id, newStatus, currentUser);
-
     if (res.success) {
       addToast({
         type: 'info',
@@ -290,41 +459,52 @@ export const AdminSellers: React.FC = () => {
     }
   };
 
+  const handleDeleteSeller = () => {
+    if (!deletingSeller || !currentUser) return;
+    const res = SellerService.deleteSeller(deletingSeller.id, currentUser);
+    if (res.success) {
+      addToast({
+        type: 'success',
+        title: 'Seller Deleted',
+        description: `${deletingSeller.name} (@${deletingSeller.username}) has been permanently deleted.`,
+      });
+    } else {
+      addToast({
+        type: 'error',
+        title: 'Delete Failed',
+        description: res.error || 'Could not delete seller.',
+      });
+    }
+    setDeletingSeller(null);
+  };
+
   return (
     <div id="admin-sellers-view" className="flex-1 p-3.5 sm:p-6 bg-slate-950 text-slate-100 overflow-y-auto space-y-4 sm:space-y-6">
-      {/* Hidden file input for avatar uploads */}
-      <input
-        ref={avatarInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handleFileChange}
-        className="hidden"
-      />
+      <input ref={avatarInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-3.5 sm:pb-4 border-b border-slate-800">
         <div>
           <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">Seller Account & Shop Assignments</h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Create cashier logins, assign specific shop units, override passwords, customize UI color signatures, and manage access
+            Create cashier logins, assign shops, grant granular permissions, override passwords, and manage access.
           </p>
         </div>
-
         <button
           id="create-seller-btn"
           onClick={openAddModal}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-lg transition self-start sm:self-auto"
+          className="flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold text-xs shadow-lg transition self-stretch sm:self-auto"
         >
           <UserPlus className="w-4 h-4" />
           <span>New Seller Account</span>
         </button>
       </div>
 
-      {/* Data Integrity Notice */}
+      {/* Audit notice */}
       <div className="p-3.5 sm:p-4 bg-slate-900 border border-slate-800 rounded-xl flex items-start gap-3">
         <Shield className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400 shrink-0 mt-0.5" />
         <div className="text-[11px] sm:text-xs text-slate-300">
-          <strong className="text-white">Commercial Audit Safety:</strong> To protect financial history, sellers are never permanently deleted from the database. Deactivating a seller prevents future POS logins while retaining all historical receipts, commissions, and revenue logs.
+          <strong className="text-white">Commercial Audit Safety:</strong> Prefer <em>Disable</em> over <em>Delete</em> — deactivating preserves all historical receipts, commissions, and revenue logs. Deleting is permanent and cannot be undone.
         </div>
       </div>
 
@@ -339,70 +519,71 @@ export const AdminSellers: React.FC = () => {
             (sum, s) => (s.status === 'COMPLETED' ? sum + s.total : sum),
             0
           );
+          const granted = PERMISSION_DEFS.filter(d => seller.permissions?.[d.key]);
 
           return (
             <div
               key={seller.id}
-              className={`p-4 sm:p-5 rounded-2xl border bg-slate-900 flex flex-col justify-between transition ${
+              className={`relative p-4 sm:p-5 rounded-2xl border bg-slate-900 flex flex-col justify-between transition ${
                 isActive ? 'border-slate-800 shadow-xl' : 'border-slate-800/50 opacity-60'
               }`}
             >
-              <div>
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div className="flex items-center gap-3">
-                    {/* Avatar with upload button */}
-                    <div className="relative group shrink-0">
-                      {seller.avatarUrl ? (
-                        <img 
-                          src={seller.avatarUrl} 
-                          alt={seller.name} 
-                          className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl object-cover shadow"
-                        />
-                      ) : (
-                        <div
-                          className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg text-white shadow"
-                          style={{ backgroundColor: colorObj.primary }}
-                        >
-                          {seller.name.charAt(0).toUpperCase()}
-                        </div>
-                      )}
-                      
-                      <button
-                        onClick={() => handleAvatarClick(seller.id)}
-                        disabled={isUploadingAvatar && uploadingSellerId === seller.id}
-                        className="absolute inset-0 flex items-center justify-center rounded-xl bg-slate-950/60 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50"
-                        title="Upload profile picture"
-                      >
-                        {isUploadingAvatar && uploadingSellerId === seller.id ? (
-                          <Upload className="w-4 h-4 text-white animate-pulse" />
-                        ) : (
-                          <Camera className="w-4 h-4 text-white" />
-                        )}
-                      </button>
-                    </div>
-                    
-                    <div>
-                      <h3 className="font-bold text-white text-xs sm:text-sm">{seller.name}</h3>
-                      <p className="text-[11px] sm:text-xs text-slate-400 font-mono">@{seller.username}</p>
-                    </div>
-                  </div>
+              {/* 3-dot button (top-right corner) */}
+              <button
+                onClick={() => setActionSheetSeller(seller)}
+                className="absolute top-2.5 right-2.5 p-2 rounded-lg bg-slate-950/60 hover:bg-slate-800 active:bg-slate-700 text-slate-400 hover:text-white transition z-10"
+                aria-label="Seller actions"
+                title="Actions"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
 
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold shrink-0 ${
-                      isActive
-                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                        : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                    }`}
-                  >
-                    {seller.status}
-                  </span>
+              <div>
+                {/* Avatar + name */}
+                <div className="flex items-start gap-3 mb-3 pr-9">
+                  <div className="relative group shrink-0">
+                    {seller.avatarUrl ? (
+                      <img src={seller.avatarUrl} alt={seller.name} className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl object-cover shadow" />
+                    ) : (
+                      <div
+                        className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl flex items-center justify-center font-bold text-base sm:text-lg text-white shadow"
+                        style={{ backgroundColor: colorObj.primary }}
+                      >
+                        {seller.name.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <button
+                      onClick={() => handleAvatarClick(seller.id)}
+                      disabled={isUploadingAvatar && uploadingSellerId === seller.id}
+                      className="absolute inset-0 flex items-center justify-center rounded-xl bg-slate-950/60 opacity-0 group-hover:opacity-100 active:opacity-100 transition-opacity disabled:opacity-50"
+                      title="Upload profile picture"
+                    >
+                      {isUploadingAvatar && uploadingSellerId === seller.id ? (
+                        <Upload className="w-4 h-4 text-white animate-pulse" />
+                      ) : (
+                        <Camera className="w-4 h-4 text-white" />
+                      )}
+                    </button>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-bold text-white text-xs sm:text-sm truncate pr-1">{seller.name}</h3>
+                    <p className="text-[11px] sm:text-xs text-slate-400 font-mono truncate">@{seller.username}</p>
+                    <span
+                      className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold ${
+                        isActive
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                      }`}
+                    >
+                      {seller.status}
+                    </span>
+                  </div>
                 </div>
 
-                {/* Assigned Shops Badges */}
+                {/* Assigned shops */}
                 <div className="mb-3">
                   <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider block mb-1.5 flex items-center gap-1">
-                    <Store className="w-3 h-3 text-amber-400" />
-                    Assigned Shop Units:
+                    <Store className="w-3 h-3 text-amber-400" /> Assigned Shop Units:
                   </span>
                   <div className="flex flex-wrap gap-1.5">
                     {sellerShops.length > 0 ? (
@@ -424,6 +605,29 @@ export const AdminSellers: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Permission badges */}
+                <div className="mb-3">
+                  <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider block mb-1.5 flex items-center gap-1">
+                    <Shield className="w-3 h-3 text-blue-400" />
+                    Granted Permissions:
+                    <span className="text-[10px] text-slate-500 font-mono normal-case">
+                      ({granted.length}/{PERMISSION_DEFS.length})
+                    </span>
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {granted.length > 0 ? (
+                      granted.map(def => (
+                        <span key={def.key} className={`text-[10px] px-1.5 py-0.5 rounded border ${badgeClassFor(def.color)}`}>
+                          {def.label}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[10px] text-slate-500 italic">No permissions granted</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Meta stats */}
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 space-y-1.5 text-xs mb-3.5 sm:mb-4">
                   <div className="flex justify-between text-slate-400">
                     <span>Color</span>
@@ -445,34 +649,14 @@ export const AdminSellers: React.FC = () => {
                 </div>
               </div>
 
-              {/* Action Toolbar */}
-              <div className="grid grid-cols-3 gap-1.5 pt-3 border-t border-slate-800 text-xs">
+              {/* Footer: compact hint row (3-dot handles actions now) */}
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-between text-[10px] text-slate-500">
+                <span>Tap <MoreVertical className="w-3 h-3 inline -mt-0.5" /> for actions</span>
                 <button
-                  onClick={() => openEditModal(seller)}
-                  className="py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition flex items-center justify-center gap-1"
+                  onClick={() => setActionSheetSeller(seller)}
+                  className="text-blue-400 hover:text-blue-300 font-semibold"
                 >
-                  <Edit className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Edit</span>
-                </button>
-
-                <button
-                  onClick={() => openPasswordModal(seller)}
-                  className="py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition flex items-center justify-center gap-1"
-                >
-                  <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Password</span>
-                </button>
-
-                <button
-                  onClick={() => handleToggleStatus(seller)}
-                  className={`py-1.5 rounded-lg font-medium transition flex items-center justify-center gap-1 ${
-                    isActive
-                      ? 'bg-rose-500/15 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/30'
-                      : 'bg-emerald-500/15 hover:bg-emerald-600 hover:text-white text-emerald-300 border border-emerald-500/30'
-                  }`}
-                >
-                  <Power className="w-3.5 h-3.5" />
-                  <span>{isActive ? 'Disable' : 'Enable'}</span>
+                  Manage →
                 </button>
               </div>
             </div>
@@ -480,11 +664,65 @@ export const AdminSellers: React.FC = () => {
         })}
       </div>
 
-      {/* Modal: Create Seller */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-3.5 sm:p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
+      {/* ─── Action Sheet ───────────────────────────────────── */}
+      {actionSheetSeller && (
+        <SellerActionSheet
+          seller={actionSheetSeller}
+          onClose={() => setActionSheetSeller(null)}
+          onEdit={() => { openEditModal(actionSheetSeller); setActionSheetSeller(null); }}
+          onPassword={() => { openPasswordModal(actionSheetSeller); setActionSheetSeller(null); }}
+          onToggle={() => { handleToggleStatus(actionSheetSeller); setActionSheetSeller(null); }}
+          onDelete={() => { setDeletingSeller(actionSheetSeller); setActionSheetSeller(null); }}
+        />
+      )}
+
+      {/* ─── Delete confirmation ────────────────────────────── */}
+      {deletingSeller && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/80 backdrop-blur-sm p-0 sm:p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in slide-in-from-bottom-4 sm:zoom-in-95">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+              <div className="flex items-center gap-2 text-rose-400">
+                <Trash2 className="w-5 h-5" />
+                <h3 className="text-sm sm:text-base font-bold text-white">Delete Seller?</h3>
+              </div>
+              <button onClick={() => setDeletingSeller(null)} className="text-slate-400 hover:text-white p-1 rounded-lg">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-200 text-xs mb-4">
+              <strong>Warning:</strong> This action is permanent and cannot be undone. If you just want to stop future logins, use <em>Disable</em> instead.
+            </div>
+
+            <p className="text-xs text-slate-400 mb-4">
+              Are you sure you want to delete <strong className="text-white">{deletingSeller.name}</strong> (@{deletingSeller.username})?
+              <br /><br />
+              Historical sales records will be preserved, but the seller account will be permanently removed.
+            </p>
+
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-3 border-t border-slate-800">
+              <button
+                onClick={() => setDeletingSeller(null)}
+                className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteSeller}
+                className="px-4 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white text-xs font-bold transition"
+              >
+                Delete Seller
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Modal: Create Seller ───────────────────────────── */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/80 backdrop-blur-sm p-0 sm:p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in slide-in-from-bottom-4 sm:zoom-in-95 max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4 sticky top-0 bg-slate-900 z-10">
               <div className="flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-blue-400" />
                 <h3 className="text-sm sm:text-base font-bold text-white">Create Seller Account</h3>
@@ -501,17 +739,18 @@ export const AdminSellers: React.FC = () => {
             <form onSubmit={handleCreateSeller} className="space-y-3.5 text-xs">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Full Name *</label>
-                <input type="text" required value={name} onChange={e => setName(e.target.value)} placeholder="e.g. David Brown" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                <input type="text" required value={name} onChange={e => setName(e.target.value)} placeholder="e.g. David Brown"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
-
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Username / Account ID *</label>
-                <input type="text" required value={username} onChange={e => setUsername(e.target.value)} placeholder="e.g. david" className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                <input type="text" required value={username} onChange={e => setUsername(e.target.value)} placeholder="e.g. david"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
-
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Initial Password *</label>
-                <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Set login password..." className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Set login password..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
 
               <div>
@@ -521,19 +760,28 @@ export const AdminSellers: React.FC = () => {
                 </label>
                 <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 rounded-lg bg-slate-950 border border-slate-800">
                   {allShops.map(sh => (
-                    <label key={sh.id} className="flex items-center gap-2.5 p-1.5 rounded hover:bg-slate-900 cursor-pointer">
-                      <input type="checkbox" checked={assignedShopIds.includes(sh.id)} onChange={() => toggleShopSelection(sh.id)} className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500" />
-                      <span className="text-xs text-slate-200">🏪 {sh.name}{sh.status === 'INACTIVE' && <span className="text-rose-400 text-[10px] ml-1">(Inactive)</span>}</span>
+                    <label key={sh.id} className="flex items-center gap-2.5 p-2 rounded hover:bg-slate-900 cursor-pointer active:bg-slate-800/80">
+                      <input type="checkbox" checked={assignedShopIds.includes(sh.id)} onChange={() => toggleShopSelection(sh.id)}
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500" />
+                      <span className="text-xs text-slate-200">
+                        🏪 {sh.name}
+                        {sh.status === 'INACTIVE' && <span className="text-rose-400 text-[10px] ml-1">(Inactive)</span>}
+                      </span>
                     </label>
                   ))}
                 </div>
               </div>
 
+              <PermissionsSelector permissions={sellerPermissions} onToggle={togglePermission} />
+
               <div>
                 <label className="block text-slate-300 font-medium mb-1.5">Signature Color Theme</label>
                 <div className="grid grid-cols-4 gap-2">
                   {SELLER_COLORS.map(c => (
-                    <button key={c.id} type="button" onClick={() => setSelectedColor(c.id)} className={`p-2 rounded-lg border text-center transition flex flex-col items-center gap-1 ${selectedColor === c.id ? 'bg-slate-800 border-white text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'}`}>
+                    <button key={c.id} type="button" onClick={() => setSelectedColor(c.id)}
+                      className={`p-2 rounded-lg border text-center transition flex flex-col items-center gap-1 ${
+                        selectedColor === c.id ? 'bg-slate-800 border-white text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                      }`}>
                       <span className="w-5 h-5 rounded-full flex items-center justify-center" style={{ backgroundColor: c.primary }}>
                         {selectedColor === c.id && <Check className="w-3 h-3 text-white" />}
                       </span>
@@ -543,20 +791,22 @@ export const AdminSellers: React.FC = () => {
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
-                <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
-                <button type="submit" className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition">Create Account</button>
+              <div className="pt-3 border-t border-slate-800 flex justify-end gap-2 sticky bottom-0 bg-slate-900">
+                <button type="button" onClick={() => setIsAddModalOpen(false)}
+                  className="px-3.5 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
+                <button type="submit"
+                  className="px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition">Create Account</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* Modal: Edit Seller */}
+      {/* ─── Modal: Edit Seller ─────────────────────────────── */}
       {isEditModalOpen && selectedSeller && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-3.5 sm:p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/80 backdrop-blur-sm p-0 sm:p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in slide-in-from-bottom-4 sm:zoom-in-95 max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4 sticky top-0 bg-slate-900 z-10">
               <h3 className="text-sm sm:text-base font-bold text-white">Edit Seller @{selectedSeller.username}</h3>
               <button onClick={() => setIsEditModalOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-lg"><X className="w-5 h-5" /></button>
             </div>
@@ -568,7 +818,8 @@ export const AdminSellers: React.FC = () => {
             <form onSubmit={handleUpdateSeller} className="space-y-3.5 text-xs">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Full Name</label>
-                <input type="text" required value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                <input type="text" required value={name} onChange={e => setName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
 
               <div>
@@ -578,19 +829,28 @@ export const AdminSellers: React.FC = () => {
                 </label>
                 <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 rounded-lg bg-slate-950 border border-slate-800">
                   {allShops.map(sh => (
-                    <label key={sh.id} className="flex items-center gap-2.5 p-1.5 rounded hover:bg-slate-900 cursor-pointer">
-                      <input type="checkbox" checked={assignedShopIds.includes(sh.id)} onChange={() => toggleShopSelection(sh.id)} className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500" />
-                      <span className="text-xs text-slate-200">🏪 {sh.name}{sh.status === 'INACTIVE' && <span className="text-rose-400 text-[10px] ml-1">(Inactive)</span>}</span>
+                    <label key={sh.id} className="flex items-center gap-2.5 p-2 rounded hover:bg-slate-900 cursor-pointer active:bg-slate-800/80">
+                      <input type="checkbox" checked={assignedShopIds.includes(sh.id)} onChange={() => toggleShopSelection(sh.id)}
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500" />
+                      <span className="text-xs text-slate-200">
+                        🏪 {sh.name}
+                        {sh.status === 'INACTIVE' && <span className="text-rose-400 text-[10px] ml-1">(Inactive)</span>}
+                      </span>
                     </label>
                   ))}
                 </div>
               </div>
 
+              <PermissionsSelector permissions={sellerPermissions} onToggle={togglePermission} />
+
               <div>
                 <label className="block text-slate-300 font-medium mb-1.5">Signature Color Theme</label>
                 <div className="grid grid-cols-4 gap-2">
                   {SELLER_COLORS.map(c => (
-                    <button key={c.id} type="button" onClick={() => setSelectedColor(c.id)} className={`p-2 rounded-lg border text-center transition flex flex-col items-center gap-1 ${selectedColor === c.id ? 'bg-slate-800 border-white text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'}`}>
+                    <button key={c.id} type="button" onClick={() => setSelectedColor(c.id)}
+                      className={`p-2 rounded-lg border text-center transition flex flex-col items-center gap-1 ${
+                        selectedColor === c.id ? 'bg-slate-800 border-white text-white' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                      }`}>
                       <span className="w-5 h-5 rounded-full flex items-center justify-center" style={{ backgroundColor: c.primary }}>
                         {selectedColor === c.id && <Check className="w-3 h-3 text-white" />}
                       </span>
@@ -600,19 +860,21 @@ export const AdminSellers: React.FC = () => {
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
-                <button type="button" onClick={() => setIsEditModalOpen(false)} className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
-                <button type="submit" className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition">Save Changes</button>
+              <div className="pt-3 border-t border-slate-800 flex justify-end gap-2 sticky bottom-0 bg-slate-900">
+                <button type="button" onClick={() => setIsEditModalOpen(false)}
+                  className="px-3.5 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
+                <button type="submit"
+                  className="px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow transition">Save Changes</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* Modal: Admin Password Reset */}
+      {/* ─── Modal: Reset Password ──────────────────────────── */}
       {isPasswordModalOpen && selectedSeller && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-3.5 sm:p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/80 backdrop-blur-sm p-0 sm:p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-md w-full p-4 sm:p-6 shadow-2xl animate-in fade-in slide-in-from-bottom-4 sm:zoom-in-95 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
               <div className="flex items-center gap-2">
                 <KeyRound className="w-5 h-5 text-amber-400" />
@@ -621,7 +883,9 @@ export const AdminSellers: React.FC = () => {
               <button onClick={() => setIsPasswordModalOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-lg"><X className="w-5 h-5" /></button>
             </div>
 
-            <p className="text-xs text-slate-400 mb-4">Set a new login password for <strong>{selectedSeller.name}</strong> (@{selectedSeller.username}).</p>
+            <p className="text-xs text-slate-400 mb-4">
+              Set a new login password for <strong>{selectedSeller.name}</strong> (@{selectedSeller.username}).
+            </p>
 
             {passError && (
               <div className="mb-4 p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs">{passError}</div>
@@ -630,12 +894,16 @@ export const AdminSellers: React.FC = () => {
             <form onSubmit={handleResetPassword} className="space-y-3.5 text-xs">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">New Password</label>
-                <input type="password" required value={newAdminSetPass} onChange={e => setNewAdminSetPass(e.target.value)} placeholder="Enter new password..." className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                <input type="password" required value={newAdminSetPass} onChange={e => setNewAdminSetPass(e.target.value)}
+                  placeholder="Enter new password..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
-                <button type="button" onClick={() => setIsPasswordModalOpen(false)} className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
-                <button type="submit" className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold shadow transition">Override Password</button>
+                <button type="button" onClick={() => setIsPasswordModalOpen(false)}
+                  className="px-3.5 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition">Cancel</button>
+                <button type="submit"
+                  className="px-4 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold shadow transition">Override Password</button>
               </div>
             </form>
           </div>
