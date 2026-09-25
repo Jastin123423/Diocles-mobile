@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Truck,
   Plus,
@@ -6,6 +6,9 @@ import {
   Search,
   X,
   Pencil,
+  Package,
+  Check,
+  ChevronDown,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { PurchaseService } from '../../services/purchaseService';
@@ -18,6 +21,235 @@ interface PurchaseItemInput {
   unitCost: number | string;
 }
 
+// ─────────────────────────────────────────────────────────────
+// Inline ProductSearchSelect — mobile-optimized bottom-sheet
+// ─────────────────────────────────────────────────────────────
+interface ProductLike {
+  id: string;
+  name: string;
+  sku: string;
+  currentStock: number;
+  unit: string;
+  purchasePrice?: number;
+  sellingPrice?: number;
+}
+
+const ProductSearchSelect: React.FC<{
+  products: ProductLike[];
+  value: string;
+  onChange: (productId: string) => void;
+  currencySymbol?: string;
+  placeholder?: string;
+}> = ({ products, value, onChange, currencySymbol = 'TSh', placeholder = 'Search name or SKU...' }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const selectedProduct = useMemo(
+    () => products.find(p => p.id === value),
+    [products, value]
+  );
+
+  // Filter — multi-token, name + SKU, capped at 100 for perf
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return products.slice(0, 50);
+    const tokens = q.split(/\s+/);
+    return products
+      .filter(p => {
+        const hay = `${p.name} ${p.sku}`.toLowerCase();
+        return tokens.every(t => hay.includes(t));
+      })
+      .slice(0, 100);
+  }, [products, query]);
+
+  // Autofocus search input on open
+  useEffect(() => {
+    if (isOpen) {
+      setTimeout(() => inputRef.current?.focus(), 50);
+    } else {
+      setQuery('');
+    }
+  }, [isOpen]);
+
+  // Lock body scroll while sheet is open
+  useEffect(() => {
+    if (!isOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [isOpen]);
+
+  const handleSelect = (productId: string) => {
+    onChange(productId);
+    setIsOpen(false);
+  };
+
+  return (
+    <>
+      {/* Trigger button (mimics a select) */}
+      <button
+        type="button"
+        onClick={() => setIsOpen(true)}
+        className="w-full flex items-center justify-between gap-2 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2.5 text-left transition active:bg-slate-800"
+      >
+        <span className="flex items-center gap-2 min-w-0 flex-1">
+          <Package className="w-4 h-4 text-slate-500 shrink-0" />
+          {selectedProduct ? (
+            <span className="min-w-0">
+              <span className="block text-white font-medium truncate leading-tight text-xs">
+                {selectedProduct.name}
+              </span>
+              <span className="block text-[10px] text-slate-500 font-mono leading-tight mt-0.5">
+                {selectedProduct.sku} • Stock: {selectedProduct.currentStock} {selectedProduct.unit}
+              </span>
+            </span>
+          ) : (
+            <span className="text-slate-500 truncate text-xs">Select a product...</span>
+          )}
+        </span>
+        <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+      </button>
+
+      {/* Bottom-sheet on mobile, centered sheet on desktop */}
+      {isOpen && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm animate-in fade-in"
+            onClick={() => setIsOpen(false)}
+          />
+
+          {/* Sheet */}
+          <div
+            className="
+              relative bg-slate-900 border border-slate-800
+              rounded-t-2xl sm:rounded-2xl
+              w-full sm:max-w-md
+              shadow-2xl
+              max-h-[85vh] sm:max-h-[80vh]
+              flex flex-col
+              animate-in fade-in slide-in-from-bottom-4 sm:zoom-in-95
+            "
+          >
+            {/* Mobile drag handle */}
+            <div className="sm:hidden flex justify-center pt-2 pb-1">
+              <span className="w-10 h-1 rounded-full bg-slate-700" />
+            </div>
+
+            {/* Header with search */}
+            <div className="p-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={query}
+                    onChange={e => setQuery(e.target.value)}
+                    placeholder={placeholder}
+                    inputMode="search"
+                    autoComplete="off"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  {query && (
+                    <button
+                      type="button"
+                      onClick={() => setQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white p-1"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsOpen(false)}
+                  className="text-slate-400 hover:text-white p-1.5 rounded-lg shrink-0"
+                  aria-label="Close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1.5">
+                {query
+                  ? `${filtered.length} match${filtered.length === 1 ? '' : 'es'}`
+                  : `Showing first ${filtered.length} of ${products.length} — type to search`}
+              </p>
+            </div>
+
+            {/* Results list */}
+            <div className="overflow-y-auto flex-1 overscroll-contain">
+              {filtered.length === 0 ? (
+                <div className="p-8 text-center">
+                  <Package className="w-9 h-9 mx-auto text-slate-600 mb-2" />
+                  <p className="text-sm text-slate-400">No products match "{query}"</p>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Try a shorter search or check the SKU
+                  </p>
+                </div>
+              ) : (
+                filtered.map(p => {
+                  const isSelected = p.id === value;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => handleSelect(p.id)}
+                      className={`w-full text-left px-3 py-3 border-b border-slate-800/60 last:border-b-0 transition active:bg-slate-800/80 ${
+                        isSelected ? 'bg-slate-800/40' : 'hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-white truncate">
+                              {p.name}
+                            </span>
+                            {isSelected && (
+                              <Check className="w-4 h-4 text-blue-400 shrink-0" />
+                            )}
+                          </div>
+                          <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-500 font-mono">
+                            <span>{p.sku}</span>
+                            <span
+                              className={
+                                p.currentStock <= 0 ? 'text-rose-400' : 'text-slate-500'
+                              }
+                            >
+                              Stock: {p.currentStock} {p.unit}
+                            </span>
+                            {p.purchasePrice !== undefined && p.purchasePrice !== null && (
+                              <span className="text-amber-400/80">
+                                Cost: {formatCurrency(p.purchasePrice, currencySymbol)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Footer hint */}
+            <div className="px-3 py-2 border-t border-slate-800 bg-slate-950/60 text-[10px] text-slate-500 flex items-center justify-between">
+              <span>Tap a product to select</span>
+              <span>{products.length} products</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// Main component
+// ─────────────────────────────────────────────────────────────
 export const AdminPurchases: React.FC = () => {
   const { currentUser, dbState, addToast, selectedShopId, currentShop } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -36,9 +268,7 @@ export const AdminPurchases: React.FC = () => {
 
   if (!currentUser) return null;
 
-  // Both Admin and Seller can always record purchases (no permission required)
   const canRecordPurchase = true;
-
   const settings = dbState.settings;
   const isSeller = currentUser.role === 'SELLER';
 
@@ -47,13 +277,6 @@ export const AdminPurchases: React.FC = () => {
     const assigned = currentUser.assignedShopIds || [];
     return assigned.length === 0 || assigned.includes(s.id);
   });
-
-  const activeShopId =
-    purchaseShopId ||
-    currentShop?.id ||
-    (selectedShopId !== 'ALL' ? selectedShopId : '') ||
-    availableShops[0]?.id ||
-    '';
 
   const shopProducts = dbState.products.filter(
     p => !purchaseShopId || purchaseShopId === 'ALL' || p.shopId === purchaseShopId
@@ -565,18 +788,14 @@ export const AdminPurchases: React.FC = () => {
                       key={idx}
                       className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 space-y-2"
                     >
-                      {/* Product select */}
-                      <select
+                      {/* ★ Searchable product picker replaces the old <select> */}
+                      <ProductSearchSelect
+                        products={shopProducts.length > 0 ? shopProducts : dbState.products}
                         value={item.productId}
-                        onChange={e => updateItemRow(idx, 'productId', e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-2 text-white text-xs"
-                      >
-                        {(shopProducts.length > 0 ? shopProducts : dbState.products).map(p => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} ({p.sku}) — Stock: {p.currentStock} {p.unit}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={productId => updateItemRow(idx, 'productId', productId)}
+                        currencySymbol={settings.currencySymbol}
+                        placeholder="Search name or SKU..."
+                      />
 
                       {/* Qty + Cost row */}
                       <div className="flex items-center gap-2">
