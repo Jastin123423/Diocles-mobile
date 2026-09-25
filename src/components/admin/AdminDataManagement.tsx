@@ -8,12 +8,10 @@ import {
   Layers,
   CheckCircle2,
   AlertTriangle,
-  FileText,
   RotateCcw,
   Cloud,
   Code,
   AlertCircle,
-  HelpCircle,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { BackupService } from '../../services/backupService';
@@ -21,8 +19,11 @@ import { QuickBooksService } from '../../services/quickbooksService';
 import { SyncService } from '../../services/syncService';
 import { CsvDataService, ImportValidationResult } from '../../services/csvDataService';
 import { ExcelImportService, ExcelParseResult } from '../../services/excelImportService';
+import { ExcelExportService } from '../../services/excelExportService';
 import { CsvDataType } from '../../types';
 import { formatDateTime } from '../../utils/formatters';
+
+type ExportFormat = 'xlsx' | 'csv';
 
 export const AdminDataManagement: React.FC = () => {
   const { currentUser, dbState, addToast } = useApp();
@@ -31,7 +32,8 @@ export const AdminDataManagement: React.FC = () => {
   // Sub-tab state
   const [csvSection, setCsvSection] = useState<'import' | 'export' | 'templates' | 'history'>('import');
   const [selectedExportType, setSelectedExportType] = useState<CsvDataType>('PRODUCTS');
-  const [selectedExportShopId, setSelectedExportShopId] = useState<string>('ALL');
+  const [selectedExportShopId, setSelectedExportShopId] = useState<string>('');
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('xlsx');
 
   // CSV Import State
   const [importDataType, setImportDataType] = useState<CsvDataType>('PRODUCTS');
@@ -134,10 +136,13 @@ export const AdminDataManagement: React.FC = () => {
   };
 
   // ==============================
-  // CSV HANDLERS (kept for export/templates)
+  // EXPORT HANDLERS
   // ==============================
   const handleExportCsv = () => {
-    const { fileName, csvContent } = CsvDataService.exportDataToCsv(selectedExportType, selectedExportShopId);
+    const { fileName, csvContent } = CsvDataService.exportDataToCsv(
+      selectedExportType,
+      selectedExportShopId || 'ALL'
+    );
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -154,6 +159,36 @@ export const AdminDataManagement: React.FC = () => {
     });
   };
 
+  const handleExportProductsExcel = () => {
+    if (!selectedExportShopId) {
+      addToast({
+        type: 'warning',
+        title: 'Select Shop First',
+        description: 'Choose the shop you want to export products from.',
+      });
+      return;
+    }
+
+    const res = ExcelExportService.exportAllProducts(selectedExportShopId);
+
+    if (res.success) {
+      addToast({
+        type: 'success',
+        title: 'Export Ready',
+        description: `${res.rowCount} products saved to ${res.fileName}`,
+      });
+    } else {
+      addToast({
+        type: 'error',
+        title: 'Export Failed',
+        description: res.error || 'Could not generate file.',
+      });
+    }
+  };
+
+  // ==============================
+  // CSV HANDLERS
+  // ==============================
   const handleDownloadTemplate = (type: CsvDataType) => {
     const { fileName, csvContent } = CsvDataService.getCsvTemplate(type);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -432,7 +467,7 @@ export const AdminDataManagement: React.FC = () => {
                   : 'text-slate-400'
               }`}
             >
-              📤 Export CSV
+              📤 Export Data
             </button>
             <button
               onClick={() => setCsvSection('templates')}
@@ -519,9 +554,6 @@ export const AdminDataManagement: React.FC = () => {
                   <strong>Excel Format:</strong>
                   <div className="mt-1 font-mono text-[10px] text-blue-100 overflow-x-auto whitespace-nowrap">
                     | Product Name | Buying Price | Selling Price | Quantity |
-                  </div>
-                  <div className="mt-1 text-[10px] text-slate-400">
-                    Flexible header names accepted
                   </div>
                 </div>
               </div>
@@ -658,17 +690,28 @@ export const AdminDataManagement: React.FC = () => {
             </div>
           )}
 
-          {/* 2. EXPORT CSV SECTION */}
+          {/* 2. EXPORT SECTION */}
           {csvSection === 'export' && (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
               <div>
-                <h3 className="font-bold text-sm text-white">Export Dataset to CSV</h3>
-                <p className="text-[11px] text-slate-400 mt-1">
-                  Export operational data for spreadsheet analysis or backup
-                </p>
+                <h3 className="font-bold text-sm text-white">Export Dataset</h3>
               </div>
 
               <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    File Format
+                  </label>
+                  <select
+                    value={exportFormat}
+                    onChange={e => setExportFormat(e.target.value as ExportFormat)}
+                    className="w-full bg-slate-950 text-xs text-white px-3 py-2.5 rounded-xl border border-slate-800 focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="xlsx">📊 Excel (.xlsx)</option>
+                    <option value="csv">📄 CSV (.csv)</option>
+                  </select>
+                </div>
+
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                     Data Category
@@ -690,30 +733,44 @@ export const AdminDataManagement: React.FC = () => {
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Filter by Shop
+                    Target Shop <span className="text-rose-400">*</span>
                   </label>
                   <select
                     value={selectedExportShopId}
                     onChange={e => setSelectedExportShopId(e.target.value)}
                     className="w-full bg-slate-950 text-xs text-white px-3 py-2.5 rounded-xl border border-slate-800 focus:outline-none focus:border-blue-500"
                   >
-                    <option value="ALL">🏢 All Shops</option>
+                    <option value="">-- Select a shop --</option>
                     {shops.map(sh => (
                       <option key={sh.id} value={sh.id}>
-                        🏪 {sh.name}
+                        🏪 {sh.name} ({sh.code || 'UNIT'})
                       </option>
                     ))}
                   </select>
                 </div>
               </div>
 
-              <button
-                onClick={handleExportCsv}
-                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-xs font-semibold py-3 rounded-xl shadow-sm transition"
-              >
-                <Download className="w-4 h-4" />
-                <span>Download {selectedExportType} CSV</span>
-              </button>
+              {exportFormat === 'xlsx' && selectedExportType === 'PRODUCTS' ? (
+                <button
+                  onClick={handleExportProductsExcel}
+                  disabled={!selectedExportShopId}
+                  className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-xs font-semibold py-3 rounded-xl shadow-sm transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download PRODUCTS Excel</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleExportCsv}
+                  disabled={!selectedExportShopId}
+                  className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-xs font-semibold py-3 rounded-xl shadow-sm transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>
+                    Download {selectedExportType} {exportFormat === 'xlsx' ? 'Excel' : 'CSV'}
+                  </span>
+                </button>
+              )}
             </div>
           )}
 
