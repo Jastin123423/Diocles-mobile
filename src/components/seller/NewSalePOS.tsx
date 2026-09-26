@@ -157,8 +157,9 @@ export const NewSalePOS: React.FC = () => {
     });
   };
 
-  // 🔧 allow blank string mid-edit for price
+  // 🔧 allow blank string mid-edit + strip leading zeros (mobile keyboard fix)
   const updateUnitPrice = (productId: string, rawValue: string) => {
+    // Allow fully blank state while editing
     if (rawValue === '') {
       setCart(prev =>
         prev.map(i => (i.product.id === productId ? { ...i, unitPrice: '' } : i))
@@ -166,16 +167,23 @@ export const NewSalePOS: React.FC = () => {
       return;
     }
 
-    const parsed = parseFloat(rawValue);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      setCart(prev =>
-        prev.map(i => (i.product.id === productId ? { ...i, unitPrice: rawValue } : i))
-      );
-      return;
+    // Normalize: keep only digits and one decimal point
+    let cleaned = rawValue.replace(/[^0-9.]/g, '');
+
+    // Collapse multiple dots into one
+    const parts = cleaned.split('.');
+    if (parts.length > 2) {
+      cleaned = parts[0] + '.' + parts.slice(1).join('');
+    }
+
+    // Strip leading zeros (but keep "0" or "0.x")
+    if (cleaned.length > 1 && cleaned[0] === '0' && cleaned[1] !== '.') {
+      cleaned = cleaned.replace(/^0+/, '');
+      if (cleaned === '') cleaned = '0';
     }
 
     setCart(prev =>
-      prev.map(i => (i.product.id === productId ? { ...i, unitPrice: rawValue } : i))
+      prev.map(i => (i.product.id === productId ? { ...i, unitPrice: cleaned } : i))
     );
   };
 
@@ -193,6 +201,7 @@ export const NewSalePOS: React.FC = () => {
     );
   };
 
+  // 🔧 strip leading zeros for quantity too (mobile keyboard fix)
   const updateQuantity = (productId: string, rawValue: string) => {
     const item = cart.find(i => i.product.id === productId);
     if (!item) return;
@@ -204,7 +213,12 @@ export const NewSalePOS: React.FC = () => {
       return;
     }
 
-    const parsed = parseInt(rawValue, 10);
+    // Strip non-digits and leading zeros
+    let cleaned = rawValue.replace(/[^0-9]/g, '');
+    cleaned = cleaned.replace(/^0+/, '');
+    if (cleaned === '') cleaned = '0';
+
+    const parsed = parseInt(cleaned, 10);
     if (!Number.isFinite(parsed)) return;
 
     let nextQty = parsed;
