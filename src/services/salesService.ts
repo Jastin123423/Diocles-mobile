@@ -79,6 +79,16 @@ export class SalesService {
       subtotal += itemTotal;
       totalCostOfGoods += itemInput.quantity * product.purchasePrice;
 
+      // 🔒 Snapshot the reference price at the exact moment of sale
+      const referencePrice =
+        product.proposedSellingPrice && product.proposedSellingPrice > 0
+          ? product.proposedSellingPrice
+          : product.sellingPrice || 0;
+      const referenceType: 'PROPOSED' | 'SELLING' =
+        product.proposedSellingPrice && product.proposedSellingPrice > 0
+          ? 'PROPOSED'
+          : 'SELLING';
+
       saleItems.push({
         id: generateUUID(),
         saleId: '',
@@ -91,6 +101,8 @@ export class SalesService {
         quantity: itemInput.quantity,
         discount: itemInput.discount || 0,
         total: Math.max(0, itemTotal),
+        referencePrice,
+        referenceType,
       });
     }
 
@@ -347,6 +359,16 @@ export class SalesService {
       newSubtotal += itemTotal;
       newCostOfGoods += itemInput.quantity * product.purchasePrice;
 
+      // 🔒 Snapshot the reference price at the moment of the edit
+      const referencePrice =
+        product.proposedSellingPrice && product.proposedSellingPrice > 0
+          ? product.proposedSellingPrice
+          : product.sellingPrice || 0;
+      const referenceType: 'PROPOSED' | 'SELLING' =
+        product.proposedSellingPrice && product.proposedSellingPrice > 0
+          ? 'PROPOSED'
+          : 'SELLING';
+
       return {
         id: generateUUID(),
         saleId: sale.id,
@@ -359,6 +381,8 @@ export class SalesService {
         quantity: itemInput.quantity,
         discount: itemInput.discount || 0,
         total: Math.max(0, itemTotal),
+        referencePrice,
+        referenceType,
       };
     });
 
@@ -544,7 +568,6 @@ export class SalesService {
       return { success: false, error: 'Request already reviewed.' };
     }
 
-    // FIX: Update request status FIRST
     const updatedRequests = requests.map(r =>
       r.id === requestId
         ? {
@@ -559,7 +582,6 @@ export class SalesService {
     );
     db.saveSaleEditRequests?.(updatedRequests);
 
-    // FIX: Enqueue REVIEW_SALE_EDIT_REQUEST FIRST
     const updatedRequest = updatedRequests.find(r => r.id === requestId);
     db.enqueueSync({
       id: generateUUID(),
@@ -574,7 +596,6 @@ export class SalesService {
       createdAt: new Date().toISOString(),
     });
 
-    // THEN apply the sale edit if approved
     if (action === 'APPROVE') {
       const sales = db.getSales();
       const sale = sales.find(s => s.id === request.saleId);
@@ -628,7 +649,6 @@ export class SalesService {
   ): Sale[] {
     let sales = db.getSales();
 
-    // Ensure sales is always an array
     if (!Array.isArray(sales)) {
       console.warn('getSales: db.getSales() returned non-array');
       return [];
