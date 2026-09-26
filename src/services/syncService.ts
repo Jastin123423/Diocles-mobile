@@ -392,6 +392,9 @@ export class SyncService {
             quantity: item.quantity,
             discount: item.discount,
             total: item.total,
+            // 🆕 Reference price snapshot from cloud (nullable for legacy rows)
+            referencePrice: item.reference_price ?? undefined,
+            referenceType: item.reference_type ?? undefined,
           }));
 
         const saleData = {
