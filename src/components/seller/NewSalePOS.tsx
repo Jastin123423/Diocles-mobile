@@ -14,6 +14,7 @@ import {
   CheckCircle,
   X,
   ChevronUp,
+  AlertTriangle,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { SalesService } from '../../services/salesService';
@@ -25,7 +26,7 @@ import { ProductImageViewerModal } from '../common/ProductImageViewerModal';
 interface CartItem {
   product: Product;
   quantity: number | string;
-  unitPrice: number;
+  unitPrice: number | string;   // 🔧 allows blank state mid-edit
   discount: number;
 }
 
@@ -50,21 +51,18 @@ export const NewSalePOS: React.FC = () => {
 
   const targetShopId = currentShop?.id || (selectedShopId !== 'ALL' ? selectedShopId : '') || (dbState.shops[0]?.id || '');
 
-  // Active products in currently selected shop
   const products = useMemo(() => {
     return dbState.products.filter(
       p => p.status === 'ACTIVE' && (!targetShopId || p.shopId === targetShopId || !p.shopId)
     );
   }, [dbState.products, targetShopId]);
 
-  // Categories for the current shop
   const categories = useMemo(() => {
     const all = dbState.categories || [];
     if (targetShopId === 'ALL') return all;
     return all.filter(c => c.shopId === targetShopId);
   }, [dbState.categories, targetShopId]);
 
-  // Filter products by search and category
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
       const matchesCategory = selectedCategory === 'ALL' || p.categoryId === selectedCategory;
@@ -78,17 +76,25 @@ export const NewSalePOS: React.FC = () => {
     });
   }, [products, selectedCategory, searchQuery]);
 
-  // Safe numeric coercion for quantity
+  // ─────────────────────────────────────────────────────────────
+  // Numeric coercion helpers
+  // ─────────────────────────────────────────────────────────────
   const qtyNum = (q: number | string): number => {
     if (typeof q === 'number') return Number.isFinite(q) ? q : 0;
     const parsed = parseInt(q, 10);
     return Number.isFinite(parsed) ? parsed : 0;
   };
 
-  // Cart Calculations
+  // 🔧 safe float coercion for price
+  const priceNum = (p: number | string): number => {
+    if (typeof p === 'number') return Number.isFinite(p) ? p : 0;
+    const parsed = parseFloat(p);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
   const subtotal = useMemo(() => {
     return cart.reduce(
-      (sum, item) => sum + qtyNum(item.quantity) * item.unitPrice - item.discount,
+      (sum, item) => sum + qtyNum(item.quantity) * priceNum(item.unitPrice) - item.discount,
       0
     );
   }, [cart]);
@@ -105,14 +111,12 @@ export const NewSalePOS: React.FC = () => {
   const tenderValue = parseFloat(amountReceived) || 0;
   const changeAmount = paymentMethod === 'CASH' ? Math.max(0, tenderValue - totalAmount) : 0;
 
-  // Auto-fill amount tendered with total when total changes
   useEffect(() => {
     if (paymentMethod === 'CASH') {
       setAmountReceived(totalAmount.toFixed(2));
     }
   }, [totalAmount, paymentMethod]);
 
-  // Add Product to Cart
   const addToCart = (product: Product) => {
     if (product.currentStock <= 0) {
       addToast({
@@ -153,9 +157,39 @@ export const NewSalePOS: React.FC = () => {
     });
   };
 
-  const updateUnitPrice = (productId: string, newPrice: number) => {
+  // 🔧 allow blank string mid-edit for price
+  const updateUnitPrice = (productId: string, rawValue: string) => {
+    if (rawValue === '') {
+      setCart(prev =>
+        prev.map(i => (i.product.id === productId ? { ...i, unitPrice: '' } : i))
+      );
+      return;
+    }
+
+    const parsed = parseFloat(rawValue);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setCart(prev =>
+        prev.map(i => (i.product.id === productId ? { ...i, unitPrice: rawValue } : i))
+      );
+      return;
+    }
+
     setCart(prev =>
-      prev.map(i => (i.product.id === productId ? { ...i, unitPrice: Math.max(0, newPrice) } : i))
+      prev.map(i => (i.product.id === productId ? { ...i, unitPrice: rawValue } : i))
+    );
+  };
+
+  // 🔧 on blur, restore selling price if blank/0
+  const handlePriceBlur = (productId: string) => {
+    setCart(prev =>
+      prev.map(i => {
+        if (i.product.id !== productId) return i;
+        const n = priceNum(i.unitPrice);
+        if (i.unitPrice === '' || n <= 0) {
+          return { ...i, unitPrice: i.product.sellingPrice };
+        }
+        return { ...i, unitPrice: n };
+      })
     );
   };
 
@@ -219,7 +253,6 @@ export const NewSalePOS: React.FC = () => {
     setIsMobileCartOpen(false);
   };
 
-  // Handle Barcode Scan
   const handleBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!barcodeInput.trim()) return;
@@ -247,7 +280,6 @@ export const NewSalePOS: React.FC = () => {
     }
   };
 
-  // Complete Sale
   const handleCompleteSale = () => {
     if (!currentUser) return;
 
@@ -266,6 +298,17 @@ export const NewSalePOS: React.FC = () => {
         type: 'error',
         title: 'Invalid Quantity',
         description: `Please set a quantity of at least 1 for ${invalid.product.name}.`,
+      });
+      return;
+    }
+
+    // 🔧 reject blank / 0 prices before submitting
+    const invalidPrice = cart.find(i => priceNum(i.unitPrice) <= 0);
+    if (invalidPrice) {
+      addToast({
+        type: 'error',
+        title: 'Invalid Price',
+        description: `Please set a price greater than 0 for ${invalidPrice.product.name}.`,
       });
       return;
     }
@@ -289,7 +332,7 @@ export const NewSalePOS: React.FC = () => {
         items: cart.map(i => ({
           productId: i.product.id,
           quantity: qtyNum(i.quantity),
-          unitPrice: i.unitPrice,
+          unitPrice: priceNum(i.unitPrice),   // 🔧 safe coercion
           discount: i.discount,
         })),
         paymentMethod,
@@ -319,7 +362,7 @@ export const NewSalePOS: React.FC = () => {
     }
   };
 
-  // Cart Items Component — SELLER VIEW (no cost / no profit / no warnings)
+  // Cart Items Component — SELLER VIEW (no cost / no profit / no below-cost warning)
   const renderCartItemsAndCheckout = () => (
     <div className="flex flex-col h-full justify-between overflow-hidden bg-slate-900">
       {/* Cart Header */}
@@ -361,91 +404,113 @@ export const NewSalePOS: React.FC = () => {
             </p>
           </div>
         ) : (
-          cart.map(item => (
-            <div
-              key={item.product.id}
-              className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 space-y-2 transition shadow-sm"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <ProductThumbnail
-                    product={item.product}
-                    size="sm"
-                    onClick={() => {
-                      setViewingProduct(item.product);
-                      setIsViewerOpen(true);
-                    }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <h5 className="text-xs font-semibold text-white truncate">{item.product.name}</h5>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
-                        {item.product.sku}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 flex-wrap">
-                      <span className="font-semibold text-emerald-400 font-mono">
-                        Total: {formatCurrency(qtyNum(item.quantity) * item.unitPrice - item.discount, settings.currencySymbol)}
-                      </span>
+          cart.map(item => {
+            const referencePrice =
+              item.product.proposedSellingPrice || item.product.sellingPrice || 0;
+            const unitPriceNum = priceNum(item.unitPrice);
+            const isBelowReference =
+              referencePrice > 0 && unitPriceNum > 0 && unitPriceNum < referencePrice;
+
+            return (
+              <div
+                key={item.product.id}
+                className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 space-y-2 transition shadow-sm"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <ProductThumbnail
+                      product={item.product}
+                      size="sm"
+                      onClick={() => {
+                        setViewingProduct(item.product);
+                        setIsViewerOpen(true);
+                      }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <h5 className="text-xs font-semibold text-white truncate">{item.product.name}</h5>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
+                          {item.product.sku}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 flex-wrap">
+                        <span className="font-semibold text-emerald-400 font-mono">
+                          Total: {formatCurrency(qtyNum(item.quantity) * priceNum(item.unitPrice) - item.discount, settings.currencySymbol)}
+                        </span>
+                      </div>
                     </div>
                   </div>
+
+                  <button
+                    onClick={() => removeFromCart(item.product.id)}
+                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 shrink-0 transition"
+                    title="Remove item"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
 
-                <button
-                  onClick={() => removeFromCart(item.product.id)}
-                  className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 shrink-0 transition"
-                  title="Remove item"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Controls: Editable Price & Quantity Stepper */}
-              <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-900">
-                <div className="flex items-center gap-1.5">
-                  <label className="text-[10px] text-slate-400">Bei:</label>
-                  <input
-                    type="number"
-                    step="any"
-                    min="0"
-                    value={item.unitPrice}
-                    onChange={e => updateUnitPrice(item.product.id, parseFloat(e.target.value) || 0)}
-                    className="w-20 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-
-                <div className="flex items-center gap-1">
-                  <label className="text-[10px] text-slate-400">Idadi:</label>
-                  <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => stepQuantity(item.product.id, -1)}
-                      className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
-                    >
-                      <Minus className="w-3.5 h-3.5" />
-                    </button>
+                {/* Controls: Editable Price & Quantity Stepper */}
+                <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-900">
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[10px] text-slate-400">Bei:</label>
+                    {/* 🔧 text input, allows blank state mid-edit; onBlur normalizes */}
                     <input
                       type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={item.quantity}
-                      onChange={e => updateQuantity(item.product.id, e.target.value)}
-                      onBlur={() => handleQuantityBlur(item.product.id)}
+                      inputMode="decimal"
+                      value={item.unitPrice}
+                      onChange={e => updateUnitPrice(item.product.id, e.target.value)}
+                      onBlur={() => handlePriceBlur(item.product.id)}
                       onFocus={e => e.target.select()}
-                      className="w-12 bg-slate-950 border border-slate-700 rounded text-center text-xs font-bold text-white font-mono py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className={`w-20 bg-slate-900 border rounded px-2 py-1 text-xs text-white font-mono focus:outline-none focus:ring-1 ${
+                        isBelowReference
+                          ? 'border-rose-500/60 focus:ring-rose-500'
+                          : 'border-slate-800 focus:ring-blue-500'
+                      }`}
                     />
-                    <button
-                      type="button"
-                      onClick={() => stepQuantity(item.product.id, 1)}
-                      className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <label className="text-[10px] text-slate-400">Idadi:</label>
+                    <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => stepQuantity(item.product.id, -1)}
+                        className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={item.quantity}
+                        onChange={e => updateQuantity(item.product.id, e.target.value)}
+                        onBlur={() => handleQuantityBlur(item.product.id)}
+                        onFocus={e => e.target.select()}
+                        className="w-12 bg-slate-950 border border-slate-700 rounded text-center text-xs font-bold text-white font-mono py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => stepQuantity(item.product.id, 1)}
+                        className="w-7 h-7 rounded-md flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 transition"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
+
+                {/* Non-blocking warning when selling below the reference price */}
+                {isBelowReference && (
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold text-rose-400 bg-rose-500/10 px-2 py-1 rounded border border-rose-500/25 mt-1">
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    <span>Unauza chini ya Bei elekezi</span>
+                  </div>
+                )}
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 
