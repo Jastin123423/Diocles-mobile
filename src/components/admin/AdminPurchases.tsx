@@ -9,11 +9,14 @@ import {
   Package,
   Check,
   ChevronDown,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { PurchaseService } from '../../services/purchaseService';
 import { formatCurrency, formatDateTime } from '../../utils/formatters';
 import type { Purchase } from '../../types';
+
+const PAGE_SIZE = 15;
 
 interface PurchaseItemInput {
   productId: string;
@@ -89,7 +92,6 @@ const ProductSearchSelect: React.FC<{
 
   return (
     <>
-      {/* Trigger button (mimics a select) */}
       <button
         type="button"
         onClick={() => setIsOpen(true)}
@@ -113,16 +115,13 @@ const ProductSearchSelect: React.FC<{
         <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
       </button>
 
-      {/* Bottom-sheet on mobile, centered sheet on desktop */}
       {isOpen && (
         <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center">
-          {/* Backdrop */}
           <div
             className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm animate-in fade-in"
             onClick={() => setIsOpen(false)}
           />
 
-          {/* Sheet */}
           <div
             className="
               relative bg-slate-900 border border-slate-800
@@ -134,12 +133,10 @@ const ProductSearchSelect: React.FC<{
               animate-in fade-in slide-in-from-bottom-4 sm:zoom-in-95
             "
           >
-            {/* Mobile drag handle */}
             <div className="sm:hidden flex justify-center pt-2 pb-1">
               <span className="w-10 h-1 rounded-full bg-slate-700" />
             </div>
 
-            {/* Header with search */}
             <div className="p-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
@@ -180,7 +177,6 @@ const ProductSearchSelect: React.FC<{
               </p>
             </div>
 
-            {/* Results list */}
             <div className="overflow-y-auto flex-1 overscroll-contain">
               {filtered.length === 0 ? (
                 <div className="p-8 text-center">
@@ -235,7 +231,6 @@ const ProductSearchSelect: React.FC<{
               )}
             </div>
 
-            {/* Footer hint */}
             <div className="px-3 py-2 border-t border-slate-800 bg-slate-950/60 text-[10px] text-slate-500 flex items-center justify-between">
               <span>Tap a product to select</span>
               <span>{products.length} products</span>
@@ -256,6 +251,10 @@ export const AdminPurchases: React.FC = () => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingPurchase, setEditingPurchase] = useState<Purchase | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Pagination
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // Form state
   const [purchaseShopId, setPurchaseShopId] = useState('');
@@ -282,36 +281,67 @@ export const AdminPurchases: React.FC = () => {
     p => !purchaseShopId || purchaseShopId === 'ALL' || p.shopId === purchaseShopId
   );
 
-  // Purchases with local enhanced search (supplier, PO#, invoice#, products, shop)
-  const purchases = PurchaseService.getPurchases(
-    {
-      shopId: isSeller
-        ? currentShop?.id || selectedShopId
-        : selectedShopId === 'ALL'
-        ? undefined
-        : selectedShopId,
-    },
-    currentUser
-  ).filter(purchase => {
-    if (!searchQuery.trim()) return true;
+  // ✅ Filter (search) → sort newest first → memo
+  const purchases = useMemo(() => {
+    const filtered = PurchaseService.getPurchases(
+      {
+        shopId: isSeller
+          ? currentShop?.id || selectedShopId
+          : selectedShopId === 'ALL'
+          ? undefined
+          : selectedShopId,
+      },
+      currentUser
+    ).filter(purchase => {
+      if (!searchQuery.trim()) return true;
 
-    const q = searchQuery.trim().toLowerCase();
+      const q = searchQuery.trim().toLowerCase();
 
-    if (purchase.supplierName.toLowerCase().includes(q)) return true;
-    if (purchase.purchaseNumber.toLowerCase().includes(q)) return true;
-    if (purchase.invoiceNumber && purchase.invoiceNumber.toLowerCase().includes(q)) return true;
-    if (
-      (purchase.items || []).some(
-        item =>
-          item.productName.toLowerCase().includes(q) ||
-          item.productId.toLowerCase().includes(q)
+      if (purchase.supplierName.toLowerCase().includes(q)) return true;
+      if (purchase.purchaseNumber.toLowerCase().includes(q)) return true;
+      if (purchase.invoiceNumber && purchase.invoiceNumber.toLowerCase().includes(q)) return true;
+      if (
+        (purchase.items || []).some(
+          item =>
+            item.productName.toLowerCase().includes(q) ||
+            item.productId.toLowerCase().includes(q)
+        )
       )
-    )
-      return true;
-    if (purchase.shopName && purchase.shopName.toLowerCase().includes(q)) return true;
+        return true;
+      if (purchase.shopName && purchase.shopName.toLowerCase().includes(q)) return true;
 
-    return false;
-  });
+      return false;
+    });
+
+    // Sort newest first
+    return [...filtered].sort((a, b) => {
+      const da = new Date(a.createdAt).getTime();
+      const db = new Date(b.createdAt).getTime();
+      return db - da;
+    });
+  }, [dbState.purchases, searchQuery, selectedShopId, currentShop, currentUser, isSeller]);
+
+  // Reset pagination on search or shop change
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [searchQuery, selectedShopId]);
+
+  // Visible slice
+  const visiblePurchases = purchases.slice(0, visibleCount);
+  const hasMore = purchases.length > visibleCount;
+  const remaining = purchases.length - visibleCount;
+
+  const handleSeeMore = () => {
+    setIsLoadingMore(true);
+    setTimeout(() => {
+      setVisibleCount(prev => prev + PAGE_SIZE);
+      setIsLoadingMore(false);
+    }, 300);
+  };
+
+  const handleSeeLess = () => {
+    setVisibleCount(PAGE_SIZE);
+  };
 
   const openNewPurchaseModal = () => {
     const targetShop =
@@ -552,7 +582,7 @@ export const AdminPurchases: React.FC = () => {
           <>
             {/* Mobile Cards (< md) */}
             <div className="md:hidden divide-y divide-slate-800/80">
-              {purchases.map(purchase => (
+              {visiblePurchases.map(purchase => (
                 <div key={purchase.id} className="p-3.5 space-y-2.5">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
@@ -629,7 +659,7 @@ export const AdminPurchases: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {purchases.map(purchase => (
+                  {visiblePurchases.map(purchase => (
                     <tr key={purchase.id} className="hover:bg-slate-850/60 transition">
                       <td className="py-3.5 px-4 text-slate-400 font-mono">
                         {formatDateTime(purchase.createdAt)}
@@ -678,6 +708,50 @@ export const AdminPurchases: React.FC = () => {
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Footer */}
+            {purchases.length > PAGE_SIZE && (
+              <div className="p-3 bg-slate-950/40 border-t border-slate-800/80 space-y-2">
+                <div className="text-[10px] text-slate-500 text-center">
+                  Showing{' '}
+                  <span className="text-slate-300 font-semibold">
+                    {Math.min(visibleCount, purchases.length)}
+                  </span>{' '}
+                  of{' '}
+                  <span className="text-slate-300 font-semibold">{purchases.length}</span>{' '}
+                  purchase orders
+                </div>
+                <div className="flex items-center gap-2">
+                  {visibleCount > PAGE_SIZE && (
+                    <button
+                      onClick={handleSeeLess}
+                      className="flex-1 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-300 text-[11px] font-semibold transition"
+                    >
+                      Show Less
+                    </button>
+                  )}
+                  {hasMore && (
+                    <button
+                      onClick={handleSeeMore}
+                      disabled={isLoadingMore}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-[11px] font-semibold shadow transition disabled:opacity-60 disabled:cursor-wait"
+                    >
+                      {isLoadingMore ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Loading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="w-3.5 h-3.5" />
+                          <span>See More ({Math.min(PAGE_SIZE, remaining)})</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -759,7 +833,6 @@ export const AdminPurchases: React.FC = () => {
                 </div>
               </div>
 
-              {/* Line Items */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-slate-300 font-semibold uppercase tracking-wider text-[11px]">
@@ -788,7 +861,6 @@ export const AdminPurchases: React.FC = () => {
                       key={idx}
                       className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 space-y-2"
                     >
-                      {/* ★ Searchable product picker replaces the old <select> */}
                       <ProductSearchSelect
                         products={shopProducts.length > 0 ? shopProducts : dbState.products}
                         value={item.productId}
@@ -797,7 +869,6 @@ export const AdminPurchases: React.FC = () => {
                         placeholder="Search name or SKU..."
                       />
 
-                      {/* Qty + Cost row */}
                       <div className="flex items-center gap-2">
                         <div className="flex-1">
                           <label className="block text-slate-500 text-[10px] mb-0.5">Qty</label>
@@ -880,7 +951,6 @@ export const AdminPurchases: React.FC = () => {
                 </div>
               </div>
 
-              {/* Total + Actions */}
               <div className="pt-3 border-t border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Total Cost:</span>
