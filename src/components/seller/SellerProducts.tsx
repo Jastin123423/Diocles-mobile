@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Search,
   Plus,
@@ -7,6 +7,8 @@ import {
   X,
   AlertCircle,
   Filter,
+  ChevronDown,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ProductService } from '../../services/productService';
@@ -17,12 +19,18 @@ import { ProductThumbnail } from '../common/ProductThumbnail';
 import { ProductImageViewerModal } from '../common/ProductImageViewerModal';
 import { ProductImageUpload } from '../common/ProductImageUpload';
 
+const PAGE_SIZE = 10;
+
 export const SellerProducts: React.FC = () => {
   const { currentUser, dbState, addToast, sellerColor, selectedShopId, currentShop } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditDeniedModal, setShowEditDeniedModal] = useState(false);
+
+  // Pagination
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // New Product Form State
   const [name, setName] = useState('');
@@ -51,12 +59,34 @@ export const SellerProducts: React.FC = () => {
   const allCategories = dbState.categories || [];
   const shopCategories = allCategories.filter(c => c.shopId === targetShopId);
 
-  const products = ProductService.getProducts({
-    shopId: targetShopId,
-    categoryId: selectedCategory === 'ALL' ? undefined : selectedCategory,
-    search: searchQuery,
-    status: 'ACTIVE',
-  });
+  // Filtered Products (memoized — search/filter unchanged)
+  const products = useMemo(() => {
+    return ProductService.getProducts({
+      shopId: targetShopId,
+      categoryId: selectedCategory === 'ALL' ? undefined : selectedCategory,
+      search: searchQuery,
+      status: 'ACTIVE',
+    });
+  }, [targetShopId, selectedCategory, searchQuery, dbState.products]);
+
+  // Reset pagination on filter/search change
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [searchQuery, selectedCategory, targetShopId]);
+
+  const visibleProducts = products.slice(0, visibleCount);
+  const hasMore = products.length > visibleCount;
+  const remaining = products.length - visibleCount;
+
+  const handleSeeMore = () => {
+    setIsLoadingMore(true);
+    setTimeout(() => {
+      setVisibleCount(prev => prev + PAGE_SIZE);
+      setIsLoadingMore(false);
+    }, 300);
+  };
+
+  const handleSeeLess = () => setVisibleCount(PAGE_SIZE);
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,7 +99,6 @@ export const SellerProducts: React.FC = () => {
       return;
     }
 
-    // Parse formatted price strings back to numbers
     const price = parsePriceInput(sellingPrice);
     if (isNaN(price) || price < 0) {
       setFormError('Please enter a valid selling price.');
@@ -116,7 +145,6 @@ export const SellerProducts: React.FC = () => {
           description: `'${name}' has been added to catalog and saved locally.`,
         });
         setShowAddModal(false);
-        // Reset form
         setName('');
         setSku('');
         setBarcode('');
@@ -195,7 +223,11 @@ export const SellerProducts: React.FC = () => {
         </div>
 
         <div className="text-[11px] text-slate-400 font-medium">
-          Showing <span className="text-white font-bold">{products.length}</span> active items
+          Showing{' '}
+          <span className="text-white font-bold">
+            {Math.min(visibleCount, products.length)}
+          </span>{' '}
+          of <span className="text-white font-bold">{products.length}</span> active items
         </div>
       </div>
 
@@ -210,7 +242,7 @@ export const SellerProducts: React.FC = () => {
           <>
             {/* Mobile Cards (< md) */}
             <div className="md:hidden divide-y divide-slate-800/80">
-              {products.map(product => {
+              {visibleProducts.map(product => {
                 const cat = categories.find(c => c.id === product.categoryId);
                 const isLow = product.currentStock <= product.minStock;
 
@@ -287,7 +319,7 @@ export const SellerProducts: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {products.map(product => {
+                  {visibleProducts.map(product => {
                     const cat = categories.find(c => c.id === product.categoryId);
                     const isLow = product.currentStock <= product.minStock;
 
@@ -348,6 +380,49 @@ export const SellerProducts: React.FC = () => {
                 </tbody>
               </table>
             </div>
+
+            {/* See More / See Less Footer */}
+            {products.length > PAGE_SIZE && (
+              <div className="p-3 bg-slate-950/40 border-t border-slate-800/80 space-y-2">
+                <div className="text-[10px] text-slate-500 text-center">
+                  Showing{' '}
+                  <span className="text-slate-300 font-semibold">
+                    {Math.min(visibleCount, products.length)}
+                  </span>{' '}
+                  of <span className="text-slate-300 font-semibold">{products.length}</span>{' '}
+                  products
+                </div>
+                <div className="flex items-center gap-2">
+                  {visibleCount > PAGE_SIZE && (
+                    <button
+                      onClick={handleSeeLess}
+                      className="flex-1 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-300 text-[11px] font-semibold transition"
+                    >
+                      Show Less
+                    </button>
+                  )}
+                  {hasMore && (
+                    <button
+                      onClick={handleSeeMore}
+                      disabled={isLoadingMore}
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-[11px] font-semibold shadow transition disabled:opacity-60 disabled:cursor-wait"
+                    >
+                      {isLoadingMore ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Loading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="w-3.5 h-3.5" />
+                          <span>See More ({Math.min(PAGE_SIZE, remaining)})</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -518,7 +593,6 @@ export const SellerProducts: React.FC = () => {
                 </div>
               </div>
 
-              {/* Product Images */}
               <div className="pt-2 border-t border-slate-800/80">
                 <ProductImageUpload images={productImages} onChange={setProductImages} />
               </div>
@@ -554,8 +628,8 @@ export const SellerProducts: React.FC = () => {
             <h3 className="text-base font-bold text-white mb-1">Admin Privilege Required</h3>
             <p className="text-xs text-slate-400 leading-relaxed mb-5">
               Sellers can add new products and process sales, but only{' '}
-              <strong>Administrators</strong> can modify prices, cost records, and existing product
-              parameters to ensure financial audit integrity.
+              <strong>Administrators</strong> can modify prices, cost records, and existing
+              product parameters to ensure financial audit integrity.
             </p>
             <button
               onClick={() => setShowEditDeniedModal(false)}
