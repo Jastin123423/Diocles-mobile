@@ -27,10 +27,10 @@ export interface User {
   name: string;
   role: UserRole;
   passwordHash: string;
-  color: string;
+  color: string; // Hex or theme color key
   status: UserStatus;
-  assignedShopIds?: string[];
-  avatarUrl?: string; // Profile picture URL
+  assignedShopIds?: string[]; // Multiple shop IDs assigned to this user
+  avatarUrl?: string; // URL to user's avatar image
   permissions?: SellerPermissions; // NEW: Granular permissions for sellers
   createdAt: string;
   updatedAt: string;
@@ -53,7 +53,7 @@ export interface Shop {
 
 export interface Category {
   id: string;
-  shopId: string;
+  shopId: string; // Specific shop this category belongs to
   name: string;
   icon?: string;
   color?: string;
@@ -67,16 +67,16 @@ export type ProductStatus = 'ACTIVE' | 'INACTIVE';
 export interface ProductImage {
   imageId: string;
   productId?: string;
-  imageOrder: number;
-  version: number;
-  dataUrl: string;
-  thumbnailUrl?: string;
+  imageOrder: number; // 0, 1, 2 (0 = Main Image)
+  version: number; // Version number for delta-sync (starts at 1)
+  dataUrl: string; // Full compressed base64 data for gallery viewer
+  thumbnailUrl?: string; // Ultra-compact thumbnail base64 for fast lists
   filename?: string;
   mimeType: string;
   fileSize: number;
   width?: number;
   height?: number;
-  hash?: string;
+  hash?: string; // Stable Checksum / Hash for comparing local vs server version
   syncStatus?: 'LOCAL_ONLY' | 'SYNCED' | 'MODIFIED_LOCALLY';
   createdAt: string;
   updatedAt: string;
@@ -84,20 +84,20 @@ export interface ProductImage {
 
 export interface Product {
   id: string;
-  shopId: string;
+  shopId: string; // Stable Shop ID
   name: string;
   sku: string;
   barcode: string;
   categoryId: string;
   sellingPrice: number;
-  proposedSellingPrice?: number;
-  purchasePrice: number;
+  proposedSellingPrice?: number; // Proposed price alias
+  purchasePrice: number; // Cost of goods
   currentStock: number;
   minStock: number;
-  unit: string;
+  unit: string; // e.g., 'pcs', 'kg', 'box', 'pack', 'liter'
   status: ProductStatus;
-  imageUrl?: string;
-  images?: ProductImage[];
+  imageUrl?: string; // Main image URL/dataUrl (for backward compatibility)
+  images?: ProductImage[]; // Optional array of up to 3 ProductImages
   createdAt: string;
   updatedAt: string;
 }
@@ -118,6 +118,13 @@ export interface SaleItem {
   quantity: number;
   discount: number;
   total: number;
+
+  // ─── Reference price snapshot (immutable at sale time) ───
+  // Captured when the sale was created so that price-deviation
+  // reports compare against what the seller actually saw, not
+  // against whatever the product price is today.
+  referencePrice?: number;
+  referenceType?: 'PROPOSED' | 'SELLING';
 }
 
 export interface Sale {
@@ -182,18 +189,7 @@ export interface SaleEditRequest {
   reviewedAt?: string;
 }
 
-export type MovementType =
-  | 'SALE'
-  | 'PURCHASE'
-  | 'PURCHASE_EDIT'
-  | 'ADJUSTMENT'
-  | 'CORRECTION'
-  | 'RETURN'
-  | 'VOID_RETURN'
-  | 'DAMAGED'
-  | 'BROKEN'
-  | 'EXPIRED'
-  | 'LOST';
+export type MovementType = 'SALE' | 'PURCHASE' | 'PURCHASE_EDIT' | 'ADJUSTMENT' | 'CORRECTION' | 'RETURN' | 'VOID_RETURN' | 'DAMAGED' | 'BROKEN' | 'EXPIRED' | 'LOST';
 
 export interface InventoryMovement {
   id: string;
@@ -202,12 +198,12 @@ export interface InventoryMovement {
   productId: string;
   productName: string;
   previousQty: number;
-  changeQty: number;
+  changeQty: number; // positive or negative
   newQty: number;
   type: MovementType;
   reason: string;
-  costValue?: number;
-  referenceId?: string;
+  costValue?: number; // Financial cost/loss value calculated based on purchase price
+  referenceId?: string; // sale ID or purchase ID
   userId: string;
   userName: string;
   createdAt: string;
@@ -256,7 +252,7 @@ export type ExpenseCategory =
 
 export interface Expense {
   id: string;
-  shopId?: string | null;
+  shopId?: string | null; // null/undefined for General Company Expense
   shopName?: string;
   isCompanyExpense?: boolean;
   category: ExpenseCategory | string;
@@ -296,20 +292,7 @@ export interface AuditLog {
   userName: string;
   action: string;
   details: string;
-  entityType:
-    | 'PRODUCT'
-    | 'SALE'
-    | 'PURCHASE'
-    | 'EXPENSE'
-    | 'SELLER'
-    | 'INVENTORY'
-    | 'SETTINGS'
-    | 'AUTH'
-    | 'BACKUP'
-    | 'SHOP'
-    | 'IMPORT'
-    | 'SALE_EDIT'
-    | 'DEBT';
+  entityType: 'PRODUCT' | 'SALE' | 'PURCHASE' | 'EXPENSE' | 'SELLER' | 'INVENTORY' | 'SETTINGS' | 'AUTH' | 'BACKUP' | 'SHOP' | 'IMPORT' | 'SALE_EDIT' | 'DEBT';
   entityId?: string;
   shopId?: string;
   timestamp: string;
@@ -375,15 +358,7 @@ export interface ColorOption {
   text: string;
 }
 
-export type CsvDataType =
-  | 'PRODUCTS'
-  | 'INVENTORY'
-  | 'SALES'
-  | 'PURCHASES'
-  | 'EXPENSES'
-  | 'SELLERS'
-  | 'SHOPS'
-  | 'DEBTS';
+export type CsvDataType = 'PRODUCTS' | 'INVENTORY' | 'SALES' | 'PURCHASES' | 'EXPENSES' | 'SELLERS' | 'SHOPS' | 'DEBTS';
 
 export interface ImportHistoryItem {
   id: string;
@@ -401,18 +376,11 @@ export interface ImportHistoryItem {
 }
 
 // ==========================================
-// DEBT MANAGEMENT
+// 1. DEBT MANAGEMENT (INDEPENDENT DOMAIN)
 // ==========================================
-export type DebtType = 'WE_DEMAND' | 'THEY_DEMAND';
+export type DebtType = 'WE_DEMAND' | 'THEY_DEMAND'; // 'Tunadai' vs 'Wanatudai'
 
-export type DebtStatus =
-  | 'PENDING'
-  | 'DUE_TODAY'
-  | 'OVERDUE'
-  | 'PARTIALLY_PAID'
-  | 'PAID'
-  | 'CANCELLED'
-  | 'ARCHIVED';
+export type DebtStatus = 'PENDING' | 'DUE_TODAY' | 'OVERDUE' | 'PARTIALLY_PAID' | 'PAID' | 'CANCELLED' | 'ARCHIVED';
 
 export interface DebtPayment {
   id: string;
@@ -429,16 +397,16 @@ export interface DebtPayment {
 
 export interface DebtRecord {
   id: string;
-  type: DebtType;
-  debtorName: string;
-  productDescription?: string;
-  amount: number;
-  paidAmount?: number;
-  remainingAmount?: number;
-  payments?: DebtPayment[];
-  dueDate?: string;
-  contact?: string;
-  notes?: string;
+  type: DebtType; // 'WE_DEMAND' (Tunadai - People who owe us) | 'THEY_DEMAND' (Wanatudai - People we owe)
+  debtorName: string; // Required (Customer/Person or Supplier/Entity)
+  productDescription?: string; // Manually typed plain text ONLY (e.g., "Daftari", "Simenti") - NO link to Products
+  amount: number; // Required, Original Total Debt in TSh
+  paidAmount?: number; // Total amount paid so far
+  remainingAmount?: number; // amount - (paidAmount || 0)
+  payments?: DebtPayment[]; // Detailed installment payment history
+  dueDate?: string; // Optional payment date (YYYY-MM-DD)
+  contact?: string; // Optional phone/contact info
+  notes?: string; // Optional notes
   status: DebtStatus;
   paidAt?: string;
   paidByUserId?: string;
@@ -446,7 +414,7 @@ export interface DebtRecord {
   paymentNotes?: string;
   createdByUserId: string;
   createdByName: string;
-  shopId?: string;
+  shopId?: string; // Optional context tag
   createdAt: string;
   updatedAt: string;
 }
@@ -475,25 +443,25 @@ export interface DebtSummary {
 }
 
 // ==========================================
-// NOTIFICATION CENTER
+// 2. NOTIFICATION CENTER (INDEPENDENT DOMAIN)
 // ==========================================
 export type NotificationCategory = 'CRITICAL' | 'WARNING' | 'INFO' | 'SUCCESS';
 
 export type NotificationType =
-  | 'DEBT_UPCOMING_CUSTOMER'
-  | 'DEBT_UPCOMING_COMPANY'
-  | 'DEBT_OVERDUE_CUSTOMER'
-  | 'DEBT_OVERDUE_COMPANY'
-  | 'STOCK_LOW'
-  | 'STOCK_LOW_ADMIN'
-  | 'STOCK_OUT'
-  | 'STOCK_OUT_ADMIN'
-  | 'PRICE_CHANGE_SELLER'
-  | 'PRICE_CHANGE_ADMIN'
+  | 'DEBT_UPCOMING_CUSTOMER' // Kesho ni siku ya [Name] kulipa deni la [Desc] Sh [Amount]
+  | 'DEBT_UPCOMING_COMPANY'  // Kesho ni siku ya kulipa [Name] pesa ya [Desc] Sh [Amount]
+  | 'DEBT_OVERDUE_CUSTOMER'   // [Name] kachelewa kulipa Sh [Amount] ya [Desc]. Zimepita siku [X]
+  | 'DEBT_OVERDUE_COMPANY'    // Malipo ya [Desc] kwa [Name] yamechelewa. Zimepita siku [X]
+  | 'STOCK_LOW'               // [Product] zimekaribia kuisha — zimebaki [Qty] (Shop-specific)
+  | 'STOCK_LOW_ADMIN'         // Low stock alert for admin
+  | 'STOCK_OUT'               // [Product] zimeisha kabisa (Shop-specific)
+  | 'STOCK_OUT_ADMIN'         // Out of stock alert for admin
+  | 'PRICE_CHANGE_SELLER'     // [Product] zimebadilishwa bei sasa zitauzwa Sh [Price] (Shop-specific)
+  | 'PRICE_CHANGE_ADMIN'      // Taarifa imetumwa kwa wauzaji wa [Shop] juu ya mabadiliko ya bei ya [Product]
   | 'LOSS_OCCURRED'
-  | 'SALE_EDIT_REQUESTED'
-  | 'SALE_EDIT_APPROVED'
-  | 'SALE_EDIT_REJECTED'
+  | 'SALE_EDIT_REQUESTED'     // New: Sale edit request notification
+  | 'SALE_EDIT_APPROVED'      // New: Sale edit approved notification
+  | 'SALE_EDIT_REJECTED'      // New: Sale edit rejected notification
   | 'SYSTEM_EVENT';
 
 export interface AppNotification {
@@ -502,13 +470,13 @@ export interface AppNotification {
   category: NotificationCategory;
   title: string;
   message: string;
-  isGlobal: boolean;
-  targetShopId?: string;
+  isGlobal: boolean; // True for debt reminders (Admin + All sellers)
+  targetShopId?: string; // For shop-specific notifications
   targetShopName?: string;
   targetUserIds?: string[];
   targetRole?: 'ADMIN' | 'SELLER' | 'ALL';
   relatedEntityId?: string;
   relatedEntityType?: 'DEBT' | 'PRODUCT' | 'SHOP' | 'SALE' | 'SALE_EDIT_REQUEST';
   createdAt: string;
-  readByUserIds: string[];
+  readByUserIds: string[]; // List of user IDs who marked this notification as read
 }
