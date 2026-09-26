@@ -14,6 +14,7 @@ import {
   Trash2,
   ChevronDown,
   ChevronRight,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ProductService } from '../../services/productService';
@@ -23,6 +24,8 @@ import { formatCurrency } from '../../utils/formatters';
 import { ProductThumbnail } from '../common/ProductThumbnail';
 import { ProductImageViewerModal } from '../common/ProductImageViewerModal';
 import { ProductImageUpload } from '../common/ProductImageUpload';
+
+const PAGE_SIZE = 5;
 
 export const AdminProducts: React.FC = () => {
   const { currentUser, dbState, addToast, selectedShopId } = useApp();
@@ -35,6 +38,10 @@ export const AdminProducts: React.FC = () => {
 
   // Collapse state per shop
   const [collapsedShops, setCollapsedShops] = useState<Set<string>>(new Set());
+
+  // Pagination state per shop
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
+  const [loadingShops, setLoadingShops] = useState<Set<string>>(new Set());
 
   // Add / Edit Product Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -119,6 +126,35 @@ export const AdminProducts: React.FC = () => {
       else next.add(shopId);
       return next;
     });
+  };
+
+  // ==============================
+  // PAGINATION HELPERS
+  // ==============================
+  const getVisibleCount = (shopId: string): number => {
+    return visibleCounts[shopId] ?? PAGE_SIZE;
+  };
+
+  const handleSeeMore = (shopId: string) => {
+    setLoadingShops(prev => new Set(prev).add(shopId));
+    setTimeout(() => {
+      setVisibleCounts(prev => ({
+        ...prev,
+        [shopId]: (prev[shopId] ?? PAGE_SIZE) + PAGE_SIZE,
+      }));
+      setLoadingShops(prev => {
+        const next = new Set(prev);
+        next.delete(shopId);
+        return next;
+      });
+    }, 300);
+  };
+
+  const handleSeeLess = (shopId: string) => {
+    setVisibleCounts(prev => ({
+      ...prev,
+      [shopId]: PAGE_SIZE,
+    }));
   };
 
   const openAddModal = () => {
@@ -647,6 +683,13 @@ export const AdminProducts: React.FC = () => {
                   p => p.status === 'ACTIVE' && p.currentStock <= p.minStock
                 ).length;
 
+                // Pagination
+                const visibleCount = getVisibleCount(shop.id);
+                const visibleProducts = shopProducts.slice(0, visibleCount);
+                const hasMore = shopProducts.length > visibleCount;
+                const remaining = shopProducts.length - visibleCount;
+                const isLoading = loadingShops.has(shop.id);
+
                 return (
                   <div
                     key={shop.id}
@@ -698,9 +741,59 @@ export const AdminProducts: React.FC = () => {
                     </button>
 
                     {!isCollapsed && (
-                      <div className="divide-y divide-slate-800/80">
-                        {shopProducts.map(renderProductCard)}
-                      </div>
+                      <>
+                        <div className="divide-y divide-slate-800/80">
+                          {visibleProducts.map(renderProductCard)}
+                        </div>
+
+                        {/* Pagination Footer */}
+                        {shopProducts.length > PAGE_SIZE && (
+                          <div className="p-3 bg-slate-950/40 border-t border-slate-800/80 space-y-2">
+                            <div className="text-[10px] text-slate-500 text-center">
+                              Showing{' '}
+                              <span className="text-slate-300 font-semibold">
+                                {Math.min(visibleCount, shopProducts.length)}
+                              </span>{' '}
+                              of{' '}
+                              <span className="text-slate-300 font-semibold">
+                                {shopProducts.length}
+                              </span>{' '}
+                              products
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {visibleCount > PAGE_SIZE && (
+                                <button
+                                  onClick={() => handleSeeLess(shop.id)}
+                                  className="flex-1 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-300 text-[11px] font-semibold transition"
+                                >
+                                  Show Less
+                                </button>
+                              )}
+                              {hasMore && (
+                                <button
+                                  onClick={() => handleSeeMore(shop.id)}
+                                  disabled={isLoading}
+                                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-[11px] font-semibold shadow transition disabled:opacity-60 disabled:cursor-wait"
+                                >
+                                  {isLoading ? (
+                                    <>
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      <span>Loading...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <ChevronDown className="w-3.5 h-3.5" />
+                                      <span>
+                                        See More ({Math.min(PAGE_SIZE, remaining)})
+                                      </span>
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 );
