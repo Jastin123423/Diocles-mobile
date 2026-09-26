@@ -14,7 +14,10 @@ import {
   CheckCircle,
   X,
   ChevronUp,
+  ChevronDown,
   AlertTriangle,
+  Loader2,
+  TrendingUp,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { SalesService } from '../../services/salesService';
@@ -23,10 +26,12 @@ import { formatCurrency } from '../../utils/formatters';
 import { ProductThumbnail } from '../common/ProductThumbnail';
 import { ProductImageViewerModal } from '../common/ProductImageViewerModal';
 
+const PAGE_SIZE = 15;
+
 interface CartItem {
   product: Product;
   quantity: number | string;
-  unitPrice: number | string;   // 🔧 allows blank state mid-edit
+  unitPrice: number | string;
   discount: number;
 }
 
@@ -46,6 +51,10 @@ export const NewSalePOS: React.FC = () => {
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
   const [isViewerOpen, setIsViewerOpen] = useState(false);
 
+  // Pagination
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   const settings = dbState.settings;
 
@@ -57,14 +66,33 @@ export const NewSalePOS: React.FC = () => {
     );
   }, [dbState.products, targetShopId]);
 
+  // ─────────────────────────────────────────────────────────────
+  // MOST-SELLING RANK MAP
+  // ─────────────────────────────────────────────────────────────
+  const salesCountMap = useMemo(() => {
+    const map = new Map<string, number>();
+    const sales = dbState.sales || [];
+    for (const sale of sales) {
+      if (sale.status !== 'COMPLETED') continue;
+      if (targetShopId && sale.shopId !== targetShopId) continue;
+      for (const item of sale.items || []) {
+        map.set(item.productId, (map.get(item.productId) || 0) + (item.quantity || 0));
+      }
+    }
+    return map;
+  }, [dbState.sales, targetShopId]);
+
   const categories = useMemo(() => {
     const all = dbState.categories || [];
     if (targetShopId === 'ALL') return all;
     return all.filter(c => c.shopId === targetShopId);
   }, [dbState.categories, targetShopId]);
 
+  // ─────────────────────────────────────────────────────────────
+  // FILTER + SORT (most-selling first)
+  // ─────────────────────────────────────────────────────────────
   const filteredProducts = useMemo(() => {
-    return products.filter(p => {
+    const filtered = products.filter(p => {
       const matchesCategory = selectedCategory === 'ALL' || p.categoryId === selectedCategory;
       const q = searchQuery.toLowerCase().trim();
       const matchesSearch =
@@ -74,7 +102,36 @@ export const NewSalePOS: React.FC = () => {
         p.barcode.toLowerCase().includes(q);
       return matchesCategory && matchesSearch;
     });
-  }, [products, selectedCategory, searchQuery]);
+
+    return [...filtered].sort((a, b) => {
+      const aSales = salesCountMap.get(a.id) || 0;
+      const bSales = salesCountMap.get(b.id) || 0;
+      if (bSales !== aSales) return bSales - aSales;
+      if (b.currentStock !== a.currentStock) return b.currentStock - a.currentStock;
+      return a.name.localeCompare(b.name);
+    });
+  }, [products, selectedCategory, searchQuery, salesCountMap]);
+
+  // Reset pagination on search/category change
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [searchQuery, selectedCategory]);
+
+  const visibleProducts = filteredProducts.slice(0, visibleCount);
+  const hasMore = filteredProducts.length > visibleCount;
+  const remaining = filteredProducts.length - visibleCount;
+
+  const handleSeeMore = () => {
+    setIsLoadingMore(true);
+    setTimeout(() => {
+      setVisibleCount(prev => prev + PAGE_SIZE);
+      setIsLoadingMore(false);
+    }, 300);
+  };
+
+  const handleSeeLess = () => {
+    setVisibleCount(PAGE_SIZE);
+  };
 
   // ─────────────────────────────────────────────────────────────
   // Numeric coercion helpers
@@ -85,7 +142,6 @@ export const NewSalePOS: React.FC = () => {
     return Number.isFinite(parsed) ? parsed : 0;
   };
 
-  // 🔧 safe float coercion for price
   const priceNum = (p: number | string): number => {
     if (typeof p === 'number') return Number.isFinite(p) ? p : 0;
     const parsed = parseFloat(p);
@@ -157,9 +213,7 @@ export const NewSalePOS: React.FC = () => {
     });
   };
 
-  // 🔧 allow blank string mid-edit + strip leading zeros (mobile keyboard fix)
   const updateUnitPrice = (productId: string, rawValue: string) => {
-    // Allow fully blank state while editing
     if (rawValue === '') {
       setCart(prev =>
         prev.map(i => (i.product.id === productId ? { ...i, unitPrice: '' } : i))
@@ -167,16 +221,11 @@ export const NewSalePOS: React.FC = () => {
       return;
     }
 
-    // Normalize: keep only digits and one decimal point
     let cleaned = rawValue.replace(/[^0-9.]/g, '');
-
-    // Collapse multiple dots into one
     const parts = cleaned.split('.');
     if (parts.length > 2) {
       cleaned = parts[0] + '.' + parts.slice(1).join('');
     }
-
-    // Strip leading zeros (but keep "0" or "0.x")
     if (cleaned.length > 1 && cleaned[0] === '0' && cleaned[1] !== '.') {
       cleaned = cleaned.replace(/^0+/, '');
       if (cleaned === '') cleaned = '0';
@@ -187,7 +236,6 @@ export const NewSalePOS: React.FC = () => {
     );
   };
 
-  // 🔧 on blur, restore selling price if blank/0
   const handlePriceBlur = (productId: string) => {
     setCart(prev =>
       prev.map(i => {
@@ -201,7 +249,6 @@ export const NewSalePOS: React.FC = () => {
     );
   };
 
-  // 🔧 strip leading zeros for quantity too (mobile keyboard fix)
   const updateQuantity = (productId: string, rawValue: string) => {
     const item = cart.find(i => i.product.id === productId);
     if (!item) return;
@@ -213,7 +260,6 @@ export const NewSalePOS: React.FC = () => {
       return;
     }
 
-    // Strip non-digits and leading zeros
     let cleaned = rawValue.replace(/[^0-9]/g, '');
     cleaned = cleaned.replace(/^0+/, '');
     if (cleaned === '') cleaned = '0';
@@ -316,7 +362,6 @@ export const NewSalePOS: React.FC = () => {
       return;
     }
 
-    // 🔧 reject blank / 0 prices before submitting
     const invalidPrice = cart.find(i => priceNum(i.unitPrice) <= 0);
     if (invalidPrice) {
       addToast({
@@ -346,7 +391,7 @@ export const NewSalePOS: React.FC = () => {
         items: cart.map(i => ({
           productId: i.product.id,
           quantity: qtyNum(i.quantity),
-          unitPrice: priceNum(i.unitPrice),   // 🔧 safe coercion
+          unitPrice: priceNum(i.unitPrice),
           discount: i.discount,
         })),
         paymentMethod,
@@ -376,7 +421,7 @@ export const NewSalePOS: React.FC = () => {
     }
   };
 
-  // Cart Items Component — SELLER VIEW (no cost / no profit / no below-cost warning)
+  // Cart Items Component
   const renderCartItemsAndCheckout = () => (
     <div className="flex flex-col h-full justify-between overflow-hidden bg-slate-900">
       {/* Cart Header */}
@@ -464,11 +509,9 @@ export const NewSalePOS: React.FC = () => {
                   </button>
                 </div>
 
-                {/* Controls: Editable Price & Quantity Stepper */}
                 <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-900">
                   <div className="flex items-center gap-1.5">
                     <label className="text-[10px] text-slate-400">Bei:</label>
-                    {/* 🔧 text input, allows blank state mid-edit; onBlur normalizes */}
                     <input
                       type="text"
                       inputMode="decimal"
@@ -515,7 +558,6 @@ export const NewSalePOS: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Non-blocking warning when selling below the reference price */}
                 {isBelowReference && (
                   <div className="flex items-center gap-1.5 text-[10px] font-semibold text-rose-400 bg-rose-500/10 px-2 py-1 rounded border border-rose-500/25 mt-1">
                     <AlertTriangle className="w-3 h-3 shrink-0" />
@@ -530,7 +572,6 @@ export const NewSalePOS: React.FC = () => {
 
       {/* Checkout Panel */}
       <div className="p-3 sm:p-3.5 bg-slate-950 border-t border-slate-800 space-y-2.5 safe-bottom">
-        {/* Payment Method Selector */}
         <div>
           <span className="block text-[10px] sm:text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
             Njia ya Malipo
@@ -564,7 +605,6 @@ export const NewSalePOS: React.FC = () => {
           </div>
         </div>
 
-        {/* Cash Tender */}
         {paymentMethod === 'CASH' && (
           <div className="space-y-1">
             <div className="flex items-center justify-between text-xs">
@@ -593,7 +633,6 @@ export const NewSalePOS: React.FC = () => {
           </div>
         )}
 
-        {/* Pricing Totals Summary */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5 space-y-1 text-xs">
           <div className="flex justify-between text-slate-400 text-[11px]">
             <span>Jumla Ndogo (Subtotal)</span>
@@ -613,7 +652,6 @@ export const NewSalePOS: React.FC = () => {
           </div>
         </div>
 
-        {/* Complete Sale Button */}
         <button
           id="complete-sale-btn"
           onClick={handleCompleteSale}
@@ -632,7 +670,6 @@ export const NewSalePOS: React.FC = () => {
     <div id="pos-terminal" className="flex-1 flex flex-col lg:flex-row overflow-hidden bg-slate-950 text-slate-100 select-none relative">
       {/* Left / Main: Product Catalog & Search */}
       <div className="flex-1 flex flex-col border-r border-slate-800 overflow-hidden">
-        {/* Search & Barcode Scan Bar */}
         <div className="p-2.5 sm:p-3.5 bg-slate-900 border-b border-slate-800 space-y-2">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
@@ -688,7 +725,6 @@ export const NewSalePOS: React.FC = () => {
             </form>
           )}
 
-          {/* Category Filter Chips */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 text-xs">
             <button
               onClick={() => setSelectedCategory('ALL')}
@@ -717,6 +753,22 @@ export const NewSalePOS: React.FC = () => {
               );
             })}
           </div>
+
+          {/* Result count hint */}
+          {filteredProducts.length > 0 && (
+            <div className="flex items-center gap-1 text-[10px] text-slate-500">
+              <TrendingUp className="w-3 h-3 text-emerald-400 shrink-0" />
+              <span className="truncate">
+                Showing{' '}
+                <span className="text-slate-300 font-semibold">
+                  {Math.min(visibleCount, filteredProducts.length)}
+                </span>{' '}
+                of{' '}
+                <span className="text-slate-300 font-semibold">{filteredProducts.length}</span>
+                {!searchQuery && ' (top sellers first)'}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Product Grid */}
@@ -728,67 +780,124 @@ export const NewSalePOS: React.FC = () => {
               <p className="text-xs text-slate-600 mt-1">Chagua kundi jingine au tumia neno tofauti.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
-              {filteredProducts.map(product => {
-                const isOutOfStock = product.currentStock <= 0;
-                const isLowStock = product.currentStock > 0 && product.currentStock <= product.minStock;
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
+                {visibleProducts.map(product => {
+                  const isOutOfStock = product.currentStock <= 0;
+                  const isLowStock = product.currentStock > 0 && product.currentStock <= product.minStock;
+                  const unitsSold = salesCountMap.get(product.id) || 0;
 
-                return (
-                  <div
-                    key={product.id}
-                    id={`pos-product-${product.id}`}
-                    className={`p-2 sm:p-2.5 rounded-xl border transition-all flex flex-col justify-between h-36 relative overflow-hidden group active:scale-[0.98] ${
-                      isOutOfStock
-                        ? 'bg-slate-900/40 border-slate-800/60 opacity-50'
-                        : 'bg-slate-900 border-slate-800 hover:border-blue-500/50 hover:bg-slate-850 hover:shadow-lg'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-start justify-between gap-1 mb-1">
-                        <span className="text-[9px] sm:text-[10px] font-mono text-slate-400 truncate">{product.sku}</span>
-                        {isOutOfStock ? (
-                          <span className="text-[8px] sm:text-[9px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30">Imeisha</span>
-                        ) : isLowStock ? (
-                          <span className="text-[8px] sm:text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 font-semibold">{product.currentStock} {product.unit}</span>
-                        ) : (
-                          <span className="text-[8px] sm:text-[9px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400">{product.currentStock} {product.unit}</span>
-                        )}
+                  return (
+                    <div
+                      key={product.id}
+                      id={`pos-product-${product.id}`}
+                      className={`p-2 sm:p-2.5 rounded-xl border transition-all flex flex-col justify-between h-36 relative overflow-hidden group active:scale-[0.98] ${
+                        isOutOfStock
+                          ? 'bg-slate-900/40 border-slate-800/60 opacity-50'
+                          : 'bg-slate-900 border-slate-800 hover:border-blue-500/50 hover:bg-slate-850 hover:shadow-lg'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-1 mb-1">
+                          <div className="flex items-center gap-1 min-w-0 flex-1">
+                            <span className="text-[9px] sm:text-[10px] font-mono text-slate-400 truncate">{product.sku}</span>
+                            {unitsSold > 0 && (
+                              <span
+                                className="text-[8px] sm:text-[9px] px-1 py-0.2 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 font-bold shrink-0"
+                                title={`${unitsSold} units sold`}
+                              >
+                                🔥 {unitsSold}
+                              </span>
+                            )}
+                          </div>
+                          {isOutOfStock ? (
+                            <span className="text-[8px] sm:text-[9px] px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 shrink-0">Imeisha</span>
+                          ) : isLowStock ? (
+                            <span className="text-[8px] sm:text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 font-semibold shrink-0">{product.currentStock} {product.unit}</span>
+                          ) : (
+                            <span className="text-[8px] sm:text-[9px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 shrink-0">{product.currentStock} {product.unit}</span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 sm:gap-2">
+                          <ProductThumbnail
+                            product={product}
+                            size="sm"
+                            onClick={() => { setViewingProduct(product); setIsViewerOpen(true); }}
+                          />
+                          <h4
+                            onClick={() => !isOutOfStock && addToCart(product)}
+                            className="text-xs font-semibold text-white line-clamp-2 transition flex-1 min-w-0 cursor-pointer hover:text-blue-300"
+                            title={product.name}
+                          >
+                            {product.name}
+                          </h4>
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 sm:gap-2">
-                        <ProductThumbnail
-                          product={product}
-                          size="sm"
-                          onClick={() => { setViewingProduct(product); setIsViewerOpen(true); }}
-                        />
-                        <h4
-                          onClick={() => !isOutOfStock && addToCart(product)}
-                          className="text-xs font-semibold text-white line-clamp-2 transition flex-1 min-w-0 cursor-pointer hover:text-blue-300"
-                          title={product.name}
+                      <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-slate-800/60">
+                        <span className="text-xs font-bold text-emerald-400 font-mono">
+                          {formatCurrency(product.sellingPrice, settings.currencySymbol)}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={isOutOfStock}
+                          onClick={() => addToCart(product)}
+                          className="w-7 h-7 sm:w-6 sm:h-6 rounded-lg bg-blue-600/20 hover:bg-blue-600 group-hover:bg-blue-600 text-blue-300 group-hover:text-white flex items-center justify-center transition disabled:opacity-30 disabled:cursor-not-allowed active:scale-90"
+                          title="Add to cart"
                         >
-                          {product.name}
-                        </h4>
+                          <Plus className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                        </button>
                       </div>
                     </div>
+                  );
+                })}
+              </div>
 
-                    <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-slate-800/60">
-                      <span className="text-xs font-bold text-emerald-400 font-mono">
-                        {formatCurrency(product.sellingPrice, settings.currencySymbol)}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={isOutOfStock}
-                        onClick={() => addToCart(product)}
-                        className="w-7 h-7 sm:w-6 sm:h-6 rounded-lg bg-blue-600/20 hover:bg-blue-600 group-hover:bg-blue-600 text-blue-300 group-hover:text-white flex items-center justify-center transition disabled:opacity-30 disabled:cursor-not-allowed active:scale-90"
-                        title="Add to cart"
-                      >
-                        <Plus className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
-                      </button>
-                    </div>
+              {/* See More / See Less Footer */}
+              {filteredProducts.length > PAGE_SIZE && (
+                <div className="mt-4 pt-4 border-t border-slate-800/60 space-y-2">
+                  <div className="text-[10px] text-slate-500 text-center">
+                    Showing{' '}
+                    <span className="text-slate-300 font-semibold">
+                      {Math.min(visibleCount, filteredProducts.length)}
+                    </span>{' '}
+                    of{' '}
+                    <span className="text-slate-300 font-semibold">{filteredProducts.length}</span>{' '}
+                    products
                   </div>
-                );
-              })}
-            </div>
+                  <div className="flex items-center gap-2">
+                    {visibleCount > PAGE_SIZE && (
+                      <button
+                        onClick={handleSeeLess}
+                        className="flex-1 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-300 text-[11px] font-semibold transition"
+                      >
+                        Show Less
+                      </button>
+                    )}
+                    {hasMore && (
+                      <button
+                        onClick={handleSeeMore}
+                        disabled={isLoadingMore}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-[11px] font-semibold shadow transition disabled:opacity-60 disabled:cursor-wait"
+                      >
+                        {isLoadingMore ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Loading...</span>
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown className="w-3.5 h-3.5" />
+                            <span>See More ({Math.min(PAGE_SIZE, remaining)})</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
