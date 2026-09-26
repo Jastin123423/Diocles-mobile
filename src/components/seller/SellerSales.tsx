@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Search,
   Receipt,
@@ -13,9 +13,12 @@ import { SalesService, CartItemInput } from '../../services/salesService';
 import { Sale } from '../../types';
 import { formatCurrency, formatDateTime } from '../../utils/formatters';
 
+type DatePreset = 'TODAY' | 'WEEK' | 'MONTH' | 'CUSTOM';
+
 export const SellerSales: React.FC = () => {
   const { currentUser, showReceipt, dbState, addToast } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
+  const [datePreset, setDatePreset] = useState<DatePreset>('TODAY');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [paymentFilter, setPaymentFilter] = useState('ALL');
@@ -26,8 +29,48 @@ export const SellerSales: React.FC = () => {
   const [editReason, setEditReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Track which sales have pending edit requests submitted locally
+  // Track locally submitted edit requests
   const [submittedSaleIds, setSubmittedSaleIds] = useState<Set<string>>(new Set());
+
+  // ---------- Date helpers ----------
+  const toYMD = (d: Date): string => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const computePresetRange = (
+    preset: DatePreset
+  ): { start: string; end: string } | null => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (preset === 'TODAY') {
+      return { start: toYMD(today), end: toYMD(today) };
+    }
+    if (preset === 'WEEK') {
+      const start = new Date(today);
+      start.setDate(start.getDate() - 6);
+      return { start: toYMD(start), end: toYMD(today) };
+    }
+    if (preset === 'MONTH') {
+      const start = new Date(today.getFullYear(), today.getMonth(), 1);
+      return { start: toYMD(start), end: toYMD(today) };
+    }
+    return null; // CUSTOM
+  };
+
+  // Apply preset → auto-compute start/end
+  useEffect(() => {
+    if (datePreset === 'CUSTOM') return;
+    const range = computePresetRange(datePreset);
+    if (range) {
+      setStartDate(range.start);
+      setEndDate(range.end);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datePreset]);
 
   if (!currentUser) return null;
 
@@ -48,6 +91,7 @@ export const SellerSales: React.FC = () => {
     return ids;
   }, [submittedSaleIds, pendingRequests]);
 
+  // Query sales — uses the computed start/end
   const sales = SalesService.getSales(
     {
       search: searchQuery,
@@ -120,8 +164,54 @@ export const SellerSales: React.FC = () => {
     }
   };
 
+  const getPeriodLabel = () => {
+    switch (datePreset) {
+      case 'TODAY':
+        return 'Today';
+      case 'WEEK':
+        return 'Last 7 Days';
+      case 'MONTH':
+        return 'This Month';
+      case 'CUSTOM':
+        return 'Custom Range';
+      default:
+        return 'Today';
+    }
+  };
+
   const hasActiveFilters =
-    startDate || endDate || searchQuery || paymentFilter !== 'ALL';
+    searchQuery ||
+    paymentFilter !== 'ALL' ||
+    datePreset !== 'TODAY' ||
+    (datePreset === 'CUSTOM' && (startDate || endDate));
+
+  // Colored presets
+  const presets: { id: DatePreset; label: string; activeClass: string; idleClass: string }[] = [
+    {
+      id: 'TODAY',
+      label: 'Today',
+      activeClass: 'bg-blue-600 border-blue-500 text-white shadow-md shadow-blue-500/30',
+      idleClass: 'bg-blue-500/10 border-blue-500/30 text-blue-300 hover:bg-blue-500/20',
+    },
+    {
+      id: 'WEEK',
+      label: 'Week',
+      activeClass: 'bg-emerald-600 border-emerald-500 text-white shadow-md shadow-emerald-500/30',
+      idleClass: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20',
+    },
+    {
+      id: 'MONTH',
+      label: 'Month',
+      activeClass: 'bg-violet-600 border-violet-500 text-white shadow-md shadow-violet-500/30',
+      idleClass: 'bg-violet-500/10 border-violet-500/30 text-violet-300 hover:bg-violet-500/20',
+    },
+    {
+      id: 'CUSTOM',
+      label: 'Custom',
+      activeClass: 'bg-amber-500 border-amber-400 text-white shadow-md shadow-amber-500/30',
+      idleClass: 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20',
+    },
+  ];
 
   return (
     <div
@@ -142,7 +232,7 @@ export const SellerSales: React.FC = () => {
         <div className="p-3 bg-slate-900 border border-slate-800 rounded-2xl grid grid-cols-2 gap-3">
           <div>
             <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">
-              Filtered Volume
+              Volume ({getPeriodLabel()})
             </span>
             <span className="text-sm font-bold text-emerald-400 font-mono">
               {formatCurrency(totalVolume, settings.currencySymbol)}
@@ -159,6 +249,7 @@ export const SellerSales: React.FC = () => {
 
       {/* Filter Toolbar */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 mb-4 space-y-2.5 text-xs">
+        {/* Search */}
         <div className="relative">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
           <input
@@ -170,6 +261,7 @@ export const SellerSales: React.FC = () => {
           />
         </div>
 
+        {/* Payment Filter */}
         <select
           value={paymentFilter}
           onChange={e => setPaymentFilter(e.target.value)}
@@ -182,40 +274,69 @@ export const SellerSales: React.FC = () => {
           <option value="BANK">Bank</option>
         </select>
 
-        <div className="space-y-2 pt-2 border-t border-slate-800/60">
+        {/* Period Preset Pills */}
+        <div className="pt-2 border-t border-slate-800/80 space-y-2">
           <div className="flex items-center gap-1.5 text-slate-400 text-xs">
             <Calendar className="w-3.5 h-3.5 shrink-0" />
-            <span className="text-[11px] shrink-0">Dates:</span>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="date"
-              value={startDate}
-              onChange={e => setStartDate(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white w-full"
-            />
-            <input
-              type="date"
-              value={endDate}
-              onChange={e => setEndDate(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white w-full"
-            />
+            <span className="text-[11px] font-semibold uppercase tracking-wider">Period</span>
           </div>
 
-          {hasActiveFilters && (
-            <button
-              onClick={() => {
-                setStartDate('');
-                setEndDate('');
-                setSearchQuery('');
-                setPaymentFilter('ALL');
-              }}
-              className="w-full px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-[11px] text-slate-300 font-medium transition"
-            >
-              Reset Filters
-            </button>
-          )}
+          <div className="grid grid-cols-4 gap-1.5">
+            {presets.map(p => {
+              const isActive = datePreset === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setDatePreset(p.id)}
+                  className={`py-2 rounded-lg border text-[11px] font-semibold transition active:scale-95 ${
+                    isActive ? p.activeClass : p.idleClass
+                  }`}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
+
+        {/* Custom date inputs — only when CUSTOM */}
+        {datePreset === 'CUSTOM' && (
+          <div className="space-y-2 pt-1 animate-in fade-in duration-150">
+            <div>
+              <label className="text-[10px] text-slate-500 block mb-1">From</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={e => setStartDate(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 block mb-1">To</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={e => setEndDate(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
+          </div>
+        )}
+
+        {hasActiveFilters && (
+          <button
+            onClick={() => {
+              setSearchQuery('');
+              setPaymentFilter('ALL');
+              setDatePreset('TODAY');
+              // startDate / endDate auto-updated by useEffect
+            }}
+            className="w-full px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-[11px] text-slate-300 font-medium transition"
+          >
+            Reset Filters
+          </button>
+        )}
       </div>
 
       {/* Sales List */}
@@ -431,9 +552,7 @@ export const SellerSales: React.FC = () => {
 
             <div className="space-y-3 mb-4">
               <div>
-                <label className="block text-slate-300 font-medium mb-1">
-                  Edit Reason *
-                </label>
+                <label className="block text-slate-300 font-medium mb-1">Edit Reason *</label>
                 <input
                   type="text"
                   value={editReason}
