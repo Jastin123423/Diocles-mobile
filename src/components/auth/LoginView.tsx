@@ -25,7 +25,7 @@ export const LoginView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [statusMsg, setStatusMsg] = useState('');
-  // 🔧 FIX: manual toggle for password visibility (used on Admin portal)
+  // Manual toggle for password visibility (used on Admin portal)
   const [showPassword, setShowPassword] = useState(false);
 
   const settings = dbState.settings;
@@ -105,7 +105,6 @@ export const LoginView: React.FC = () => {
         const refreshed = await pullFreshAccountsFromCloud();
 
         if (refreshed) {
-          // Retry local login with freshly pulled data
           const retryResult = await AuthService.login(username, password, activePortal);
 
           if (retryResult.success && retryResult.user) {
@@ -140,8 +139,8 @@ export const LoginView: React.FC = () => {
     }
   };
 
-  // 🔧 FIX: Password is visible when SELLER portal is active,
-  //         masked when ADMIN portal is active (unless manually toggled).
+  // Password is visible when SELLER portal is active,
+  // masked when ADMIN portal is active (unless manually toggled).
   const passwordIsVisible = activePortal === 'SELLER' || showPassword;
 
   return (
@@ -194,7 +193,6 @@ export const LoginView: React.FC = () => {
                 onClick={() => {
                   setActivePortal('SELLER');
                   setErrorMsg('');
-                  // 🔧 FIX: reset manual toggle when switching portals
                   setShowPassword(false);
                 }}
                 className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold transition-all active:scale-95 ${
@@ -213,7 +211,6 @@ export const LoginView: React.FC = () => {
                 onClick={() => {
                   setActivePortal('ADMIN');
                   setErrorMsg('');
-                  // 🔧 FIX: reset manual toggle when switching portals
                   setShowPassword(false);
                 }}
                 className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold transition-all active:scale-95 ${
@@ -245,6 +242,7 @@ export const LoginView: React.FC = () => {
 
             {/* Form */}
             <form onSubmit={handleLogin} className="space-y-4">
+              {/* Username */}
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
                   {activePortal === 'ADMIN'
@@ -266,11 +264,18 @@ export const LoginView: React.FC = () => {
                         : 'Enter seller username'
                     }
                     autoFocus
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    inputMode="text"
+                    enterKeyHint="next"
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                   />
                 </div>
               </div>
 
+              {/* Password */}
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
                   Password
@@ -280,26 +285,31 @@ export const LoginView: React.FC = () => {
                     <KeyRound className="w-4 h-4" />
                   </div>
 
-                  {/* 🔧 FIX: type is text when visible, password when hidden.
-                      When Seller portal is active, always visible.
-                      When Admin portal is active, hidden by default + toggle button. */}
+                  {/* Always type="text" for friendly mobile keyboard.
+                      When hidden, characters are masked with -webkit-text-security. */}
                   <input
                     id="login-password-input"
-                    type={passwordIsVisible ? 'text' : 'password'}
+                    type="text"
                     value={password}
                     onChange={e => setPassword(e.target.value)}
                     placeholder="Enter password..."
-                    autoComplete="off"
+                    autoComplete="new-password"
                     autoCorrect="off"
                     autoCapitalize="off"
                     spellCheck={false}
+                    inputMode="text"
+                    enterKeyHint="done"
+                    style={
+                      passwordIsVisible
+                        ? undefined
+                        : ({ WebkitTextSecurity: 'disc' } as React.CSSProperties)
+                    }
                     className={`w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 ${
                       activePortal === 'ADMIN' ? 'pr-11' : 'pr-3'
                     } py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition`}
                   />
 
-                  {/* 🔧 FIX: Toggle button only shown on ADMIN portal.
-                      On Seller portal, the field is always visible — no toggle needed. */}
+                  {/* Eye toggle only on ADMIN portal */}
                   {activePortal === 'ADMIN' && (
                     <button
                       type="button"
@@ -317,7 +327,7 @@ export const LoginView: React.FC = () => {
                   )}
                 </div>
 
-                {/* 🔧 FIX: Friendly hint so sellers know their input is visible */}
+                {/* Friendly hint on Seller portal */}
                 {activePortal === 'SELLER' && (
                   <p className="text-[10px] text-slate-500 mt-1.5 flex items-center gap-1">
                     <Eye className="w-3 h-3" />
