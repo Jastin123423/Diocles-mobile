@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Search,
   Receipt,
@@ -21,6 +21,8 @@ import { db } from '../../db/storage';
 import { Sale, SaleEditRequest } from '../../types';
 import { formatCurrency, formatDateTime } from '../../utils/formatters';
 
+type DatePreset = 'TODAY' | 'WEEK' | 'MONTH' | 'CUSTOM';
+
 export const AdminSales: React.FC = () => {
   const { currentUser, showReceipt, dbState, addToast } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
@@ -28,6 +30,7 @@ export const AdminSales: React.FC = () => {
   const [paymentFilter, setPaymentFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [shopFilter, setShopFilter] = useState('ALL');
+  const [datePreset, setDatePreset] = useState<DatePreset>('TODAY');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [isPrinting, setIsPrinting] = useState(false);
@@ -47,6 +50,49 @@ export const AdminSales: React.FC = () => {
   // Pending edit requests toggle
   const [showEditRequests, setShowEditRequests] = useState(false);
 
+  // ---------- Date helpers ----------
+  const toYMD = (d: Date): string => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const computePresetRange = (
+    preset: DatePreset
+  ): { start: string; end: string } | null => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (preset === 'TODAY') {
+      return { start: toYMD(today), end: toYMD(today) };
+    }
+
+    if (preset === 'WEEK') {
+      const start = new Date(today);
+      start.setDate(start.getDate() - 6); // last 7 days rolling
+      return { start: toYMD(start), end: toYMD(today) };
+    }
+
+    if (preset === 'MONTH') {
+      const start = new Date(today.getFullYear(), today.getMonth(), 1);
+      return { start: toYMD(start), end: toYMD(today) };
+    }
+
+    return null; // CUSTOM
+  };
+
+  // Apply preset → compute start/end (except CUSTOM)
+  useEffect(() => {
+    if (datePreset === 'CUSTOM') return;
+    const range = computePresetRange(datePreset);
+    if (range) {
+      setStartDate(range.start);
+      setEndDate(range.end);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datePreset]);
+
   // Permission check
   if (!currentUser) return null;
   if (
@@ -60,7 +106,7 @@ export const AdminSales: React.FC = () => {
   const canVoidSale = currentUser.role === 'ADMIN' || currentUser.permissions?.canDeleteSales;
   const isAdmin = currentUser.role === 'ADMIN';
 
-  // Force pull on mount to fetch latest edit requests
+  // Force pull on mount
   useEffect(() => {
     const forcePull = async () => {
       try {
@@ -426,8 +472,36 @@ export const AdminSales: React.FC = () => {
     paymentFilter !== 'ALL' ||
     statusFilter !== 'ALL' ||
     shopFilter !== 'ALL' ||
-    startDate ||
-    endDate;
+    datePreset !== 'TODAY' ||
+    (datePreset === 'CUSTOM' && (startDate || endDate));
+
+  // Colored presets config
+  const presets: { id: DatePreset; label: string; activeClass: string; idleClass: string }[] = [
+    {
+      id: 'TODAY',
+      label: 'Today',
+      activeClass: 'bg-blue-600 border-blue-500 text-white shadow-md shadow-blue-500/30',
+      idleClass: 'bg-blue-500/10 border-blue-500/30 text-blue-300 hover:bg-blue-500/20',
+    },
+    {
+      id: 'WEEK',
+      label: 'Week',
+      activeClass: 'bg-emerald-600 border-emerald-500 text-white shadow-md shadow-emerald-500/30',
+      idleClass: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20',
+    },
+    {
+      id: 'MONTH',
+      label: 'Month',
+      activeClass: 'bg-violet-600 border-violet-500 text-white shadow-md shadow-violet-500/30',
+      idleClass: 'bg-violet-500/10 border-violet-500/30 text-violet-300 hover:bg-violet-500/20',
+    },
+    {
+      id: 'CUSTOM',
+      label: 'Custom',
+      activeClass: 'bg-amber-500 border-amber-400 text-white shadow-md shadow-amber-500/30',
+      idleClass: 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20',
+    },
+  ];
 
   return (
     <div
@@ -582,6 +656,57 @@ export const AdminSales: React.FC = () => {
           />
         </div>
 
+        {/* Date Preset Pills */}
+        <div>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Calendar className="w-3.5 h-3.5 text-slate-400" />
+            <span className="text-slate-400 text-[11px] font-semibold uppercase tracking-wider">
+              Period
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {presets.map(p => {
+              const isActive = datePreset === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setDatePreset(p.id)}
+                  className={`py-2 rounded-lg border text-[11px] font-semibold transition active:scale-95 ${
+                    isActive ? p.activeClass : p.idleClass
+                  }`}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Custom date range inputs — only when CUSTOM */}
+        {datePreset === 'CUSTOM' && (
+          <div className="grid grid-cols-2 gap-2 pt-1 animate-in fade-in duration-150">
+            <div>
+              <label className="text-[10px] text-slate-500 block mb-1">From</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={e => setStartDate(e.target.value)}
+                className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white w-full focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 block mb-1">To</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={e => setEndDate(e.target.value)}
+                className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white w-full focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-2">
           <select
             value={shopFilter}
@@ -633,27 +758,6 @@ export const AdminSales: React.FC = () => {
           </select>
         </div>
 
-        <div className="space-y-2 pt-2 border-t border-slate-800/80">
-          <div className="flex items-center gap-2">
-            <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span className="text-slate-400 text-[11px] shrink-0">Dates:</span>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="date"
-              value={startDate}
-              onChange={e => setStartDate(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white w-full"
-            />
-            <input
-              type="date"
-              value={endDate}
-              onChange={e => setEndDate(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-white w-full"
-            />
-          </div>
-        </div>
-
         {hasActiveFilters && (
           <button
             onClick={() => {
@@ -662,8 +766,8 @@ export const AdminSales: React.FC = () => {
               setPaymentFilter('ALL');
               setStatusFilter('ALL');
               setShopFilter('ALL');
-              setStartDate('');
-              setEndDate('');
+              setDatePreset('TODAY');
+              // startDate / endDate auto-updated by useEffect
             }}
             className="w-full px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-300 font-semibold transition text-xs"
           >
